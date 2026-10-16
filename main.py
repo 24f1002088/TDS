@@ -1,0 +1,78 @@
+import os
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+
+DEFAULTS: dict[str, Any] = {
+    "port": 8000,
+    "workers": 1,
+    "debug": False,
+    "log_level": "info",
+    "api_key": "default-secret-0002",
+}
+
+load_dotenv(Path(__file__).with_name(".env"), override=False)
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def coerce(key: str, value: Any) -> Any:
+    if key in {"port", "workers"}:
+        return int(value)
+    if key == "debug":
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
+    return str(value)
+
+
+def effective_values(overrides: list[str]) -> dict[str, Any]:
+    values = DEFAULTS.copy()
+
+    yaml_path = Path(__file__).with_name("config.development.yaml")
+    with yaml_path.open("r", encoding="utf-8") as config_file:
+        for key, value in (yaml.safe_load(config_file) or {}).items():
+            values[key] = coerce(key, value)
+
+    environment_values = {
+        "port": os.getenv("APP_PORT"),
+        "workers": os.getenv("APP_WORKERS", os.getenv("NUM_WORKERS")),
+        "debug": os.getenv("APP_DEBUG"),
+        "log_level": os.getenv("APP_LOG_LEVEL"),
+        "api_key": os.getenv("APP_API_KEY"),
+    }
+    for key, value in environment_values.items():
+        if value is not None:
+            values[key] = coerce(key, value)
+
+    for override in overrides:
+        if "=" not in override:
+            continue
+        key, value = override.split("=", 1)
+        key = key.strip()
+        if key:
+            values[key] = coerce(key, value.strip())
+
+    return {
+        "port": values["port"],
+        "workers": values["workers"],
+        "debug": values["debug"],
+        "log_level": values["log_level"],
+        "api_key": "****",
+    }
+
+
+@app.get("/effective-config")
+def effective_config(set: list[str] = Query(default=[])) -> dict[str, Any]:
+    return effective_values(set)

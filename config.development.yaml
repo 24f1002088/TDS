@@ -1,0 +1,3 @@
+port: 8776
+workers: 5
+log_level: warning
