@@ -1,0 +1,10 @@
+category: 日本語
+
+KNOWLEDGE ARTICLES - File 7
+
+This is a test file for the reorganization exercise.
+Path: content/section-a/intro/file07.txt
+Category: 日本語
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.

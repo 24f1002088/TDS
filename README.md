@@ -1,13 +1,41 @@
-#  Badly  Formatted  Markdown    
+# Knowledge Base Reorganization
 
-*  This is an uneven list
-* With inconsistent spacing
-   *    And weird indentation
+## Task
 
->This quote has no space
->   This one has too many
+You have 30 text files scattered across a nested directory structure. Your job is to reorganize them into a flat structure based on categories.
 
-y p6 fUNptY  QstX2 MpcS2 dFBZp e9gPv vHM 87wY G 7C tO3 g 1l4 xtKG5T nMk 
-HCkd  JE5J5OseYVj6 4   fY W VwG TyMq U w Xtly7mrjYSX5u8 wj3  fVYqKQj6M d  71vID CniA e1XaC qsj H5   5Laic   EW k kpWyqG1
-BTEckkSte4Uk
-  VI  kn MFmnEgi e OsZri 9 Ju  XQH6x7r80X Wp2D Q8n moxC sNAIPL  FilV0P6Ro CB 8 IqU efoxlZ 6MU
+**Rules:**
+1. Read the **first line** in each .txt file that matches `category: ...`
+2. Create a directory for each category
+3. Move each file to: `{category}/{path-with-dashes}-{filename}`
+   - Replace all `/` in the original path with `-`
+   - Keep the filename as-is
+
+**Example:**
+- Original: `docs/chapter1/file01.txt` with first line `category: reports`
+- New location: `reports/docs-chapter1-file01.txt`
+
+**Example:**
+- Original: `project/part 2/intro/file15.txt` with first line `category: documentation`
+- New location: `documentation/project-part 2-intro-file15.txt`
+
+## Instructions
+
+1. Extract the ZIP file
+2. Use shell commands (bash) to reorganize the files
+3. After reorganization, run: `find . -type f | LC_ALL=C sort | sha256sum`
+4. Submit the hash (first part before the space/dash)
+
+## Important Notes
+
+- Some filenames/paths contain **Unicode characters**, **spaces**, and **special characters**
+- Some categories use **non-ASCII characters** (accents, diacritics, etc.)
+- Use `LC_ALL=C` to ensure consistent sorting regardless of locale
+- The hash must match exactly, including directory structure
+
+## Hints
+
+- Use `grep -m 1` to get the first matching line
+- Use `tr '/' '-'` to replace slashes with dashes
+- Use `find`, `grep`, `cut`, `mkdir`, `mv` commands
+- Quote paths properly to handle spaces and special characters

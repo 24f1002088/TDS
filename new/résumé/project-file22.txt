@@ -1,0 +1,10 @@
+category: résumé
+
+KNOWLEDGE ARTICLES - File 22
+
+This is a test file for the reorganization exercise.
+Path: project/file22.txt
+Category: résumé
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.

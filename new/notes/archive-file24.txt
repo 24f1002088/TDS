@@ -1,0 +1,10 @@
+category: notes
+
+KNOWLEDGE ARTICLES - File 24
+
+This is a test file for the reorganization exercise.
+Path: archive/file24.txt
+Category: notes
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
