@@ -66,6 +66,19 @@ def current_orders(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(latest.values())
 
 
+def money_value(row: dict[str, Any], *names: str) -> float:
+    for name in names:
+        value = row.get(name)
+        if value is None or value == "":
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+        match = re.search(r"-?\d+(?:,\d{3})*(?:\.\d+)?", str(value))
+        if match:
+            return float(match.group(0).replace(",", ""))
+    return 0.0
+
+
 def answer_ledger_question(question: str) -> Any:
     rows = current_orders(load_ledger_rows())
     lowered = question.lower()
@@ -95,12 +108,12 @@ def answer_ledger_question(question: str) -> Any:
     if "refund" in lowered or "refunded" in lowered:
         refunded = [row for row in filtered if str(row.get("status", "")).lower() == "refunded"]
         return len(refunded) if any(word in lowered for word in ("count", "how many", "number")) else sum(
-            float(row.get("refund_amount", row.get("amount", row.get("total", 0))) or 0) for row in refunded
+            money_value(row, "refund_amount", "amount", "total", "revenue") for row in refunded
         )
     paid = [row for row in filtered if str(row.get("status", "")).lower() == "paid"]
-    if "revenue" in lowered or "sales" in lowered or "total" in lowered:
+    if any(word in lowered for word in ("revenue", "sales", "total", "earn", "earned")):
         return round(
-            sum(float(row.get("amount", row.get("total", row.get("revenue", 0))) or 0) for row in paid),
+            sum(money_value(row, "amount", "total", "revenue", "total_usd", "net_amount") for row in paid),
             2,
         )
     return len(filtered)
