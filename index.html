@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TechMart Q1 2025: Delhi March revenue</title>
+<style>
+  :root { --bg:#f7f8f5; --ink:#1d2a2a; --muted:#5b6a69; --accent:#0f6b63; --line:#cfd8d5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14201f; --ink:#e8efed; --muted:#9fb1ae; --accent:#5fd0c3; --line:#2f4442; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:18px/1.6 Georgia, "Iowan Old Style", serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 4rem 1.25rem; }
+  h1 { font-size: clamp(2rem, 6vw, 3.25rem); line-height:1.1; margin:0 0 1rem; letter-spacing:-.02em; }
+  h2 { font-size:1.25rem; margin:2.5rem 0 .75rem; }
+  p { max-width: 38rem; }
+  .answer { font-size: clamp(3rem, 14vw, 6rem); font-weight:700; color:var(--accent);
+            line-height:1; margin:1.5rem 0 .25rem; font-variant-numeric: tabular-nums; }
+  .note { color:var(--muted); margin:0; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric: tabular-nums;
+          font-family: system-ui, sans-serif; font-size:.95rem; }
+  th, td { text-align:right; padding:.5rem .6rem; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
+  tfoot td { font-weight:700; border-bottom:0; }
+  a { color:var(--accent); }
+  footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--line); color:var(--muted); font-size:.95rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Delhi sales in March 2025</h1>
+  <p>Regional performance check for TechMart Electronics, using the archived Q1 transaction file (<code>sales_data.csv</code>, 131 transactions).</p>
+
+  <div class="answer">3,363</div>
+  <p class="note">Total revenue, rounded to the nearest integer (exact: 3,363.06)</p>
+
+  <h2>How it was calculated</h2>
+  <p>Keep rows where city is Delhi and the month is Mar, then sum quantity × price. The file had no missing values or duplicate rows.</p>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Date</th><th>Product</th><th>Qty</th><th>Price</th><th>Revenue</th></tr></thead>
+    <tbody>
+      <tr><td>2025-Mar-5</td><td>Headset</td><td>1</td><td>500.01</td><td>500.01</td></tr>
+      <tr><td>2025-Mar-10</td><td>Keyboard</td><td>7</td><td>390.24</td><td>2,731.68</td></tr>
+      <tr><td>2025-Mar-21</td><td>Monitor</td><td>1</td><td>131.37</td><td>131.37</td></tr>
+    </tbody>
+    <tfoot><tr><td colspan="4">Total</td><td>3,363.06</td></tr></tfoot>
+  </table>
+  </div>
+
+  <footer>
+    Contact: <!--email_off-->24f1002088@ds.study.iitm.ac.in<!--/email_off-->
+  </footer>
+</main>
+</body>
+</html>
