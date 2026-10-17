@@ -5,7 +5,7 @@ import io
 import json
 import re
 from datetime import datetime
-from urllib.request import urlopen
+from urllib.request import Request as UrlRequest, urlopen
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +42,14 @@ LEDGER_ORDERS_URL = os.getenv("LEDGER_ORDERS_URL", "")
 def load_ledger_rows() -> list[dict[str, Any]]:
     if not LEDGER_ORDERS_URL:
         return []
-    with urlopen(LEDGER_ORDERS_URL, timeout=10) as response:
+    request = UrlRequest(
+        LEDGER_ORDERS_URL,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; AcmeLedger/1.0)",
+            "Accept": "application/json, text/plain, */*",
+        },
+    )
+    with urlopen(request, timeout=10) as response:
         body = response.read().decode("utf-8")
     try:
         payload = json.loads(body)
