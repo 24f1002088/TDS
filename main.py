@@ -1,5 +1,11 @@
 import os
 import hashlib
+import csv
+import io
+import json
+import re
+from datetime import datetime
+from urllib.request import urlopen
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +36,81 @@ app.add_middleware(
 
 EXAM_EMAIL = "24f1002088@ds.study.iitm.ac.in"
 MCP_PROTOCOL_VERSION = "2024-11-05"
+LEDGER_ORDERS_URL = os.getenv("LEDGER_ORDERS_URL", "")
+
+
+def load_ledger_rows() -> list[dict[str, Any]]:
+    if not LEDGER_ORDERS_URL:
+        return []
+    with urlopen(LEDGER_ORDERS_URL, timeout=10) as response:
+        body = response.read().decode("utf-8")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return list(csv.DictReader(io.StringIO(body)))
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    for key in ("orders", "data", "results", "items"):
+        if isinstance(payload.get(key), list):
+            return [row for row in payload[key] if isinstance(row, dict)]
+    return []
+
+
+def current_orders(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        order_id = str(row.get("order_id", row.get("id", "")))
+        updated = str(row.get("updated_at", ""))
+        if order_id not in latest or updated > str(latest[order_id].get("updated_at", "")):
+            latest[order_id] = row
+    return list(latest.values())
+
+
+def answer_ledger_question(question: str) -> Any:
+    rows = current_orders(load_ledger_rows())
+    lowered = question.lower()
+    month_match = re.search(
+        r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b",
+        lowered,
+    )
+    year_match = re.search(r"\b(20\d{2})\b", lowered)
+    region_match = re.search(r"\b(north|south|east|west|central)\b", lowered)
+    filtered = rows
+    if month_match or year_match:
+        month = month_match.group(1) if month_match else None
+        year = year_match.group(1) if year_match else None
+        filtered = [
+            row
+            for row in filtered
+            if (date_value := str(row.get("date", row.get("order_date", row.get("created_at", ""))))).lower()
+            and (not month or month in date_value.lower())
+            and (not year or year in date_value)
+        ]
+    if region_match:
+        filtered = [
+            row
+            for row in filtered
+            if region_match.group(1) in str(row.get("region", "")).lower()
+        ]
+    if "refund" in lowered or "refunded" in lowered:
+        refunded = [row for row in filtered if str(row.get("status", "")).lower() == "refunded"]
+        return len(refunded) if any(word in lowered for word in ("count", "how many", "number")) else sum(
+            float(row.get("refund_amount", row.get("amount", row.get("total", 0))) or 0) for row in refunded
+        )
+    paid = [row for row in filtered if str(row.get("status", "")).lower() == "paid"]
+    if "revenue" in lowered or "sales" in lowered or "total" in lowered:
+        return round(
+            sum(float(row.get("amount", row.get("total", row.get("revenue", 0))) or 0) for row in paid),
+            2,
+        )
+    return len(filtered)
+
+
+@app.post("/")
+@app.post("/answer")
+async def answer_question(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    return {"answer": answer_ledger_question(str(payload.get("question", "")))}
 
 
 def mcp_result(request_id: Any, result: dict[str, Any]) -> JSONResponse:
@@ -37,7 +118,6 @@ def mcp_result(request_id: Any, result: dict[str, Any]) -> JSONResponse:
 
 
 @app.post("/mcp")
-@app.post("/")
 async def mcp_endpoint(
     request: Request,
     x_exam_challenge: str | None = Header(default=None),
