@@ -1,11 +1,13 @@
 import os
+import hashlib
 from pathlib import Path
 from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 
 DEFAULTS: dict[str, Any] = {
     "port": 8000,
@@ -25,6 +27,70 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+EXAM_EMAIL = "24f1002088@ds.study.iitm.ac.in"
+MCP_PROTOCOL_VERSION = "2024-11-05"
+
+
+def mcp_result(request_id: Any, result: dict[str, Any]) -> JSONResponse:
+    return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+
+@app.post("/mcp")
+@app.post("/")
+async def mcp_endpoint(
+    request: Request,
+    x_exam_challenge: str | None = Header(default=None),
+) -> Response:
+    message = await request.json()
+    method = message.get("method")
+    request_id = message.get("id")
+
+    if method == "notifications/initialized":
+        return Response(status_code=202)
+
+    if method == "initialize":
+        return mcp_result(
+            request_id,
+            {
+                "protocolVersion": message.get("params", {}).get(
+                    "protocolVersion", MCP_PROTOCOL_VERSION
+                ),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "exam-challenge-server", "version": "1.0.0"},
+            },
+        )
+
+    if method == "tools/list":
+        return mcp_result(
+            request_id,
+            {
+                "tools": [
+                    {
+                        "name": "solve_challenge",
+                        "description": "Solve the current exam challenge from the request header.",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            },
+        )
+
+    if method == "tools/call":
+        challenge = x_exam_challenge or ""
+        digest = hashlib.sha256(f"{challenge}:{EXAM_EMAIL}".encode("utf-8")).hexdigest()[:16]
+        return mcp_result(
+            request_id,
+            {"content": [{"type": "text", "text": digest}]},
+        )
+
+    return JSONResponse(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32601, "message": "Method not found"},
+        },
+        status_code=404,
+    )
 
 
 def coerce(key: str, value: Any) -> Any:
