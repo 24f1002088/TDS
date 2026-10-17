@@ -126,7 +126,6 @@ def answer_ledger_question(question: str) -> Any:
     return len(filtered)
 
 
-@app.post("/")
 @app.post("/answer")
 async def answer_question(request: Request) -> dict[str, Any]:
     payload = await request.json()
