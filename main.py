@@ -47,6 +47,8 @@ def load_ledger_rows() -> list[dict[str, Any]]:
         headers={
             "User-Agent": "Mozilla/5.0 (compatible; AcmeLedger/1.0)",
             "Accept": "application/json, text/plain, */*",
+            "Referer": "https://exam.sanand.workers.dev/",
+            "Origin": "https://exam.sanand.workers.dev",
         },
     )
     with urlopen(request, timeout=10) as response:
@@ -126,6 +128,7 @@ def answer_ledger_question(question: str) -> Any:
     return len(filtered)
 
 
+@app.post("/")
 @app.post("/answer")
 async def answer_question(request: Request) -> dict[str, Any]:
     payload = await request.json()
