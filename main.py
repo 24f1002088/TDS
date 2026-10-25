@@ -423,6 +423,15 @@ async def a2a_agent_card(request: Request) -> JSONResponse:
             "description": "Reads invoice claim batches, proposes evidence-backed actions, and executes only accepted results.",
             "version": "1.0.0",
             "capabilities": {"streaming": False, "pushNotifications": False},
+            "securitySchemes": {
+                "bearerAuth": {
+                    "httpAuthSecurityScheme": {
+                        "scheme": "Bearer",
+                        "description": "Use the deployment Bearer token.",
+                    }
+                }
+            },
+            "security": [{"bearerAuth": []}],
             "supportedInterfaces": [
                 {"url": base_url, "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"}
             ],
