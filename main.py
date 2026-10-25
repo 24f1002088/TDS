@@ -458,6 +458,7 @@ async def a2a_agent_card(request: Request) -> JSONResponse:
 
 
 @app.post(A2A_BASE_PATH + "/message:send")
+@app.post(A2A_BASE_PATH + "/message%3Asend")
 async def a2a_send(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -467,7 +468,10 @@ async def a2a_send(
     principal, error = _a2a_check_headers(authorization, a2a_version, content_type, None, True)
     if error:
         return error
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        return _a2a_error("INVALID_MESSAGE", 400)
     message = body.get("message") if isinstance(body, dict) else None
     if not isinstance(message, dict) or not message.get("messageId") or message.get("role") != "ROLE_USER":
         return _a2a_error("INVALID_MESSAGE", 400)
@@ -490,7 +494,10 @@ async def a2a_send(
             return _a2a_task_response(task)
 
 
-        task, error = _a2a_store_task(principal, str(message["messageId"]), message)
+        try:
+            task, error = _a2a_store_task(principal, str(message["messageId"]), message)
+        except (sqlite3.Error, OSError):
+            return _a2a_error("TASK_STORAGE_UNAVAILABLE", 503)
         if error:
             return error
         return _a2a_task_response(task)
