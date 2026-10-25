@@ -311,7 +311,15 @@ def _a2a_store_task(
         except (TypeError, ValueError):
             connection.close()
             return None, _a2a_error("INVALID_MESSAGE", 400)
-        payload = next(part["data"] for part in message["parts"] if part.get("mediaType") == A2A_BATCH_MEDIA)
+        payload = next(
+            (
+                part["data"]
+                for part in message.get("parts", [])
+                if part.get("mediaType") == A2A_BATCH_MEDIA
+                and isinstance(part.get("data"), dict)
+            ),
+            {},
+        )
         connection.execute(
             "INSERT INTO a2a_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -480,10 +488,20 @@ async def a2a_send(
             _a2a_save_task(principal, task, connection)
             connection.close()
             return _a2a_task_response(task)
+
+
         task, error = _a2a_store_task(principal, str(message["messageId"]), message)
         if error:
             return error
         return _a2a_task_response(task)
+
+
+@app.get(A2A_BASE_PATH + "/")
+async def a2a_base() -> JSONResponse:
+    return JSONResponse(
+        {"service": "invoice-action-agent", "agentCard": "/.well-known/agent-card.json"},
+        media_type=A2A_JSON_MEDIA,
+    )
 
 
 def _a2a_route_headers(
