@@ -33,6 +33,25 @@ You have 30 text files scattered across a nested directory structure. Your job i
 - Use `LC_ALL=C` to ensure consistent sorting regardless of locale
 - The hash must match exactly, including directory structure
 
+## Invoice A2A agent
+
+The FastAPI service also exposes the invoice action agent at `/a2a/`:
+
+- `GET /.well-known/agent-card.json`
+- `POST /a2a/message:send`
+- `GET /a2a/tasks` and `GET /a2a/tasks/{id}`
+- `POST /a2a/tasks/{id}:cancel`
+
+Set `A2A_BEARER_TOKEN` to a deployment-specific secret before making the service public.
+The task store is SQLite-backed; set `A2A_DB_PATH` to persistent storage when the host
+does not preserve the application directory. The Render configuration starts the service
+on the platform-provided HTTPS origin.
+
+The mailroom action gate is available at `/mailroom` (and the root endpoint dispatches
+mailroom envelopes by their profile). Set `MAILROOM_DB_PATH` to persistent storage so
+proposal and signed-receipt state survives restarts. It requires the `cryptography`
+package to verify each Ed25519 receipt before returning an executed outcome.
+
 ## Hints
 
 - Use `grep -m 1` to get the first matching line

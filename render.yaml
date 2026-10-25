@@ -7,3 +7,5 @@ services:
     envVars:
       - key: LEDGER_ORDERS_URL
         sync: false
+      - key: A2A_BEARER_TOKEN
+        sync: false
