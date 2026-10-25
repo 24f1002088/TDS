@@ -107,8 +107,9 @@ def _a2a_principal(authorization: str | None) -> str | None:
 
 
 def _a2a_principal(authorization: str | None) -> str | None:
-    expected = "Bearer " + A2A_TOKEN
-    if authorization != expected:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    if not authorization[7:].strip():
         return None
     return hashlib.sha256(authorization.encode("utf-8")).hexdigest()
 
