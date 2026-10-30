@@ -1177,8 +1177,14 @@ def _incident_plan(body: dict[str, Any], incoming_traceparent: str | None) -> di
                       "name": "incident.join", "kind": 1, "attributes": common,
                       "links": [{"traceId": trace_id, "spanId": s["spanId"]}
                                 for s in spans if s["name"].startswith("execute_tool ")]})
-    effect = next((name for name in body["policy"].get("effectTools", [])
-                   if name in catalog), "page_owner")
+    effect_tools = [
+        name for name in body["policy"].get("effectTools", [])
+        if name in catalog
+    ]
+    if any(term in text for term in ("at capacity", "maximum", "scaling limit", "cannot scale")):
+        effect = next((name for name in effect_tools if "page" in name.lower() or "owner" in name.lower()), None)
+    else:
+        effect = effect_tools[0] if effect_tools else None
     return {
         "runId": body["runId"], "status": "waiting",
         "diagnosis": {"rootCause": root, "evidence": evidence},
@@ -1220,6 +1226,57 @@ def _incident_refresh_trace(state: dict[str, Any]) -> None:
                 existing["status"] = {"code": 2}
                 if receipt.get("errorType"):
                     existing["attributes"]["error.type"] = receipt["errorType"]
+
+
+def _incident_add_action_spans(state: dict[str, Any], dispatch: dict[str, Any]) -> None:
+    client_span = dispatch["traceparent"].split("-")[2]
+    parent = next(
+        (span["spanId"] for span in state["_spans"]
+         if span["name"] == f"invoke_agent incident-response"),
+        "",
+    )
+    execute_span = _incident_hex(16)
+    common = {
+        "ga5.run.id": state["runId"],
+        "ga5.public.marker": state["_body"]["publicMarker"],
+        "ga5.action.id": dispatch["actionId"],
+        "gen_ai.tool.name": dispatch["toolName"],
+        "gen_ai.tool.call.id": dispatch["callId"],
+        "gen_ai.operation.name": "execute_tool",
+    }
+    state["_spans"].append({
+        "traceId": state["_traceId"], "spanId": execute_span,
+        "parentSpanId": parent, "name": f"execute_tool {dispatch['toolName']}",
+        "kind": 1, "attributes": common,
+    })
+    state["_spans"].append({
+        "traceId": state["_traceId"], "spanId": client_span,
+        "parentSpanId": execute_span, "name": f"POST tool/{dispatch['toolName']}",
+        "kind": 3,
+        "attributes": {
+            **common, "ga5.attempt": dispatch["attempt"],
+            "http.request.method": "POST",
+            "http.request.resend_count": dispatch["attempt"] - 1,
+        },
+    })
+
+
+def _incident_add_approval_span(state: dict[str, Any], approval: dict[str, Any]) -> None:
+    agent_span = next(
+        (span["spanId"] for span in state["_spans"]
+         if span["name"] == "invoke_agent incident-response"),
+        "",
+    )
+    state["_spans"].append({
+        "traceId": state["_traceId"], "spanId": _incident_hex(16),
+        "parentSpanId": agent_span, "name": "approval_gate", "kind": 1,
+        "attributes": {
+            "ga5.run.id": state["runId"],
+            "ga5.public.marker": state["_body"]["publicMarker"],
+            "ga5.approval.id": approval["approvalId"],
+            "ga5.approval.action.id": approval["actionId"],
+        },
+    })
 
 
 def _incident_otlp_attributes(attributes: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1316,6 +1373,14 @@ def _incident_receipts(state: dict[str, Any], body: dict[str, Any]) -> None:
         }
         state["dispatches"] = [dispatch]
         state["actionLog"].append(dispatch)
+        _incident_add_action_spans(state, dispatch)
+        approval_span = next(
+            (span for span in state["_spans"] if span["name"] == "approval_gate"
+             and span["attributes"].get("ga5.approval.id") == approval["approvalId"]),
+            None,
+        )
+        if approval_span:
+            approval_span["attributes"]["ga5.approval.nonce"] = approval["nonce"]
         return
     outcomes = body.get("outcomes", [])
     for outcome in outcomes:
@@ -1380,13 +1445,17 @@ def _incident_receipts(state: dict[str, Any], body: dict[str, Any]) -> None:
                 args = _incident_effect_arguments(state, effect)
                 state["approvals"] = [{"approvalId": approval_id, "actionId": action_id,
                                        "toolName": effect, "argumentsDigest": _incident_digest(args)}]
+                _incident_add_approval_span(state, state["approvals"][0])
             else:
                 state["dispatches"] = [{"actionId": action_id, "callId": call_id, "phase": "effect",
                                         "toolName": effect, "arguments": _incident_effect_arguments(state, effect),
                                         "evidence": state["diagnosis"]["evidence"][:2], "attempt": 1,
                                         "traceparent": f"00-{state['_traceId']}-{_incident_hex(16)}-01"}]
                 state["actionLog"].extend(state["dispatches"])
+                _incident_add_action_spans(state, state["dispatches"][0])
         elif any(d["phase"] == "effect" for d in state["actionLog"]):
+            state["status"] = "completed"
+        elif state["chosenEffect"] is None:
             state["status"] = "completed"
 
 
