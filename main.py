@@ -1076,12 +1076,14 @@ def _incident_plan(body: dict[str, Any], incoming_traceparent: str | None) -> di
     lines = _incident_lines(incident["transcript"])
     text = incident["transcript"].lower()
     causes = incident["allowedRootCauses"]
-    scores = {
-        cause: sum(1 for _, line in lines if any(
-            word in line.lower() for word in re.findall(r"[a-z0-9_]{4,}", cause.lower())
-        ))
-        for cause in causes
-    }
+    scores = {}
+    for cause in causes:
+        terms = re.findall(r"[a-z0-9_]{4,}", cause.lower())
+        scores[cause] = sum(
+            10 if cause.lower() in line.lower() else
+            sum(1 for term in terms if term in line.lower())
+            for _, line in lines
+        )
     root = max(causes, key=lambda cause: scores[cause]) if causes else "unknown"
     decisive = [
         line_id for line_id, line in lines
@@ -1090,15 +1092,44 @@ def _incident_plan(body: dict[str, Any], incoming_traceparent: str | None) -> di
     if len(decisive) < 2:
         decisive = [line_id for line_id, _ in lines[:4]]
     evidence = list(dict.fromkeys(decisive))[:4]
-    catalog = {item.get("name"): item for item in body.get("toolCatalog", []) if isinstance(item, dict)}
-    diagnostics = []
-    for name in ("query_metrics", "query_logs", "check_health"):
-        if name in catalog and len(diagnostics) < int(body["policy"].get("maximumDiagnostics", 3)):
-            if name == "query_metrics" and not any("metric" in line or "cpu" in line or "latency" in line for line in text.splitlines()):
-                continue
-            diagnostics.append(name)
-    if not diagnostics:
-        diagnostics = [next(iter(catalog), "query_metrics")]
+    catalog = {
+        item.get("name"): item for item in body.get("toolCatalog", [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    diagnostic_names = [
+        name for name in catalog
+        if name not in set(body["policy"].get("effectTools", []))
+        and any(word in name.lower() or word in str(catalog[name].get("description", "")).lower()
+                for word in ("metric", "log", "health", "trace", "diagnos"))
+    ]
+    diagnostic_names.sort(key=lambda name: (
+        0 if ("metric" in name.lower() and any(
+            word in text for word in ("cpu", "latency", "memory", "traffic", "scale", "load")
+        )) else 1,
+        0 if ("log" in name.lower() and any(
+            word in text for word in ("error", "exception", "stack", "failed", "log")
+        )) else 1,
+    ))
+    diagnostics = diagnostic_names[:max(1, min(
+        int(body["policy"].get("maximumDiagnostics", 3)), 2
+    ))]
+    if not diagnostics and catalog:
+        diagnostics = [next(iter(catalog))]
+
+    def tool_arguments(tool_name: str) -> dict[str, Any]:
+        schema = catalog.get(tool_name, {}).get("inputSchema", {})
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        values = {
+            "service": incident["service"],
+            "serviceName": incident["service"],
+            "incidentId": incident["incidentId"],
+            "incident_id": incident["incidentId"],
+            "severity": incident.get("severity", ""),
+        }
+        return {
+            key: values[key] for key in properties
+            if key in values
+        } or {"service": incident["service"], "incidentId": incident["incidentId"]}
     trace_id = _incident_hex(32)
     parent_span = None
     if incoming_traceparent:
@@ -1124,7 +1155,7 @@ def _incident_plan(body: dict[str, Any], incoming_traceparent: str | None) -> di
         action_id = f"act-{_incident_hex(16)}"
         call_id = f"call-{_incident_hex(16)}"
         client_span = _incident_hex(16)
-        args = {"service": incident["service"], "incidentId": incident["incidentId"]}
+        args = tool_arguments(name)
         dispatch = {
             "actionId": action_id, "callId": call_id, "phase": "diagnostic",
             "toolName": name, "arguments": args, "evidence": evidence[:2],
@@ -1172,14 +1203,23 @@ def _incident_refresh_trace(state: dict[str, Any]) -> None:
         client = dispatch["traceparent"].split("-")[2]
         existing = next((s for s in state["_spans"] if s["spanId"] == client), None)
         if existing:
+            receipt = next((r for r in state["receiptLog"]
+                            if r.get("actionId") == action_id
+                            and r.get("attempt") == dispatch["attempt"]), {})
             existing["attributes"].update({
-                "ga5.receipt.id": next((r.get("receiptId") for r in state["receiptLog"]
-                                        if r.get("actionId") == action_id and r.get("attempt") == dispatch["attempt"]), ""),
-                "ga5.receipt.nonce": next((r.get("nonce") for r in state["receiptLog"]
-                                           if r.get("actionId") == action_id and r.get("attempt") == dispatch["attempt"]), ""),
-                "http.response.status_code": next((r.get("status") for r in state["receiptLog"]
-                                                   if r.get("actionId") == action_id and r.get("attempt") == dispatch["attempt"]), 0),
+                "gen_ai.tool.name": dispatch["toolName"],
+                "gen_ai.tool.call.id": dispatch["callId"],
+                "gen_ai.operation.name": "execute_tool",
+                "ga5.receipt.id": receipt.get("receiptId", ""),
+                "ga5.receipt.nonce": receipt.get("nonce", ""),
+                "http.response.status_code": receipt.get("status", 0),
+                "http.request.method": "POST",
+                "http.request.resend_count": dispatch["attempt"] - 1,
             })
+            if receipt.get("status") == 503 or receipt.get("status") == 0:
+                existing["status"] = {"code": 2}
+                if receipt.get("errorType"):
+                    existing["attributes"]["error.type"] = receipt["errorType"]
 
 
 def _incident_otlp_attributes(attributes: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1213,6 +1253,27 @@ def _incident_save(db: sqlite3.Connection, state: dict[str, Any]) -> None:
     db.execute("UPDATE incident_runs SET state_json=? WHERE run_id=?",
                (_canonical_json(state), state["runId"]))
     db.commit()
+
+
+def _incident_effect_arguments(state: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    incident = state["_body"]["incident"]
+    catalog = {
+        item.get("name"): item for item in state["_body"].get("toolCatalog", [])
+        if isinstance(item, dict)
+    }
+    schema = catalog.get(tool_name, {}).get("inputSchema", {})
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    values = {
+        "service": incident["service"],
+        "serviceName": incident["service"],
+        "incidentId": incident["incidentId"],
+        "incident_id": incident["incidentId"],
+        "severity": incident.get("severity", ""),
+    }
+    return {key: values[key] for key in properties if key in values} or {
+        "service": incident["service"],
+        "incidentId": incident["incidentId"],
+    }
 
 
 def _incident_receipts(state: dict[str, Any], body: dict[str, Any]) -> None:
@@ -1270,8 +1331,36 @@ def _incident_receipts(state: dict[str, Any], body: dict[str, Any]) -> None:
             retry = dict(pending)
             retry["attempt"] = 2
             retry["traceparent"] = f"00-{state['_traceId']}-{_incident_hex(16)}-01"
-            state["dispatches"] = [retry]
+            state["dispatches"] = [
+                retry if dispatch["actionId"] == pending["actionId"] else dispatch
+                for dispatch in state["dispatches"]
+            ]
             state["actionLog"].append(retry)
+            client_span = retry["traceparent"].split("-")[2]
+            execute_span = next(
+                (span for span in state["_spans"]
+                 if span["name"] == f"execute_tool {retry['toolName']}"
+                 and span["attributes"].get("ga5.action.id") == retry["actionId"]),
+                None,
+            )
+            state["_spans"].append({
+                "traceId": state["_traceId"],
+                "spanId": client_span,
+                "parentSpanId": execute_span["spanId"] if execute_span else "",
+                "name": f"POST tool/{retry['toolName']}",
+                "kind": 3,
+                "attributes": {
+                    "ga5.run.id": state["runId"],
+                    "ga5.public.marker": state["_body"]["publicMarker"],
+                    "ga5.action.id": retry["actionId"],
+                    "gen_ai.tool.name": retry["toolName"],
+                    "gen_ai.tool.call.id": retry["callId"],
+                    "gen_ai.operation.name": "execute_tool",
+                    "ga5.attempt": 2,
+                    "http.request.method": "POST",
+                    "http.request.resend_count": 1,
+                },
+            })
             state["status"] = "waiting"
             return
         if outcome.get("status") == 0 and outcome.get("errorType") == "timeout":
@@ -1288,12 +1377,12 @@ def _incident_receipts(state: dict[str, Any], body: dict[str, Any]) -> None:
             action_id, call_id = f"act-{_incident_hex(16)}", f"call-{_incident_hex(16)}"
             if effect in state["_body"]["policy"].get("approvalRequiredFor", []):
                 approval_id = f"approval-{_incident_hex(16)}"
-                args = {"service": state["_body"]["incident"]["service"]}
+                args = _incident_effect_arguments(state, effect)
                 state["approvals"] = [{"approvalId": approval_id, "actionId": action_id,
                                        "toolName": effect, "argumentsDigest": _incident_digest(args)}]
             else:
                 state["dispatches"] = [{"actionId": action_id, "callId": call_id, "phase": "effect",
-                                        "toolName": effect, "arguments": {"service": state["_body"]["incident"]["service"]},
+                                        "toolName": effect, "arguments": _incident_effect_arguments(state, effect),
                                         "evidence": state["diagnosis"]["evidence"][:2], "attempt": 1,
                                         "traceparent": f"00-{state['_traceId']}-{_incident_hex(16)}-01"}]
                 state["actionLog"].extend(state["dispatches"])
