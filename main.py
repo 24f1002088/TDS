@@ -68,6 +68,7 @@ A2A_DB_LOCK = threading.RLock()
 
 def _a2a_database() -> sqlite3.Connection:
     connection = sqlite3.connect(A2A_DB_PATH, check_same_thread=False)
+    connection.execute("PRAGMA busy_timeout = 5000")
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS a2a_tasks (
@@ -79,6 +80,18 @@ def _a2a_database() -> sqlite3.Connection:
             batch_id TEXT NOT NULL,
             state TEXT NOT NULL,
             task_json TEXT NOT NULL,
+            UNIQUE(principal, message_id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS a2a_messages (
+            principal TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            message_hash TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            response_json TEXT NOT NULL,
             UNIQUE(principal, message_id)
         )
         """
@@ -201,10 +214,17 @@ def _a2a_decide(package: dict[str, Any]) -> dict[str, Any]:
         (paragraph, match.group(1))
         for paragraph in candidates
         if (match := re.search(
-            r"\b(settle_invoice|request_approval|hold_invoice|reject_duplicate|open_exception)\b",
+            r"(?:recommended\s+action|proposed\s+action|decision|action)\s*[:=]\s*"
+            r"(settle_invoice|request_approval|hold_invoice|reject_duplicate|open_exception)\b",
             paragraph,
             re.I,
         ))
+        and not re.search(
+            r"\b(?:do not|not|never|without)\s+(?:\w+\s+){0,2}"
+            + re.escape(match.group(1)),
+            paragraph,
+            re.I,
+        )
     ]
     if explicit:
         decisive, explicit_action = max(explicit, key=lambda item: len(_a2a_refs(item[0])))
@@ -238,8 +258,9 @@ def _a2a_decide(package: dict[str, Any]) -> dict[str, Any]:
         "amountMinor": _a2a_amount(package, text),
         "currency": currency,
     }
-    evidence = refs if len(refs) == 3 else refs + [f"[package:{package.get('packageId', '')}]"] * (3 - len(refs))
-    evidence = evidence[:3]
+    evidence = refs[:3]
+    if len(evidence) != 3:
+        raise ValueError("INSUFFICIENT_EVIDENCE")
     rationale = f"{action}: the decisive record supports this disposition. Evidence: {', '.join(evidence)}."
     return {
         "packageId": str(package.get("packageId", package.get("id", ""))),
@@ -267,8 +288,16 @@ def _a2a_task(
     batch_id = str(payload.get("batchId", ""))
     if not batch_id:
         raise ValueError("INVALID_BATCH")
-    proposals = [_a2a_decide(package) for package in payload["packages"] if isinstance(package, dict)]
-    if len({item["packageId"] for item in proposals}) != len(proposals):
+    if not payload["packages"] or any(
+        not isinstance(package, dict) for package in payload["packages"]
+    ):
+        raise ValueError("INVALID_BATCH")
+    proposals = [_a2a_decide(package) for package in payload["packages"]]
+    if (
+        len({item["packageId"] for item in proposals}) != len(proposals)
+        or len({item["actionId"] for item in proposals}) != len(proposals)
+        or any(not item["packageId"] or len(item["evidenceRefs"]) != 3 for item in proposals)
+    ):
         raise ValueError("INVALID_BATCH")
     task_id = task_id or uuid.uuid4().hex
     context_id = context_id or uuid.uuid4().hex
@@ -360,7 +389,7 @@ def _a2a_apply_results(
     ):
         return None, _a2a_error("INVALID_CONTINUATION", 409)
     if task["status"]["state"] in {"TASK_STATE_COMPLETED", "TASK_STATE_CANCELED"}:
-        return task, None
+        return None, _a2a_error("TASK_ALREADY_TERMINAL", 409)
     proposal_part = task["artifacts"][0]["parts"][0]["data"]["proposals"]
     proposals = {proposal["packageId"]: proposal for proposal in proposal_part}
     results = data.get("results")
@@ -420,6 +449,30 @@ def _a2a_save_task(principal: str, task: dict[str, Any], connection: sqlite3.Con
         (task["status"]["state"], _canonical_json(task), principal, task["id"]),
     )
     connection.commit()
+
+
+def _a2a_message_hash(message: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(message).encode("utf-8")).hexdigest()
+
+
+def _a2a_replayed_message(
+    connection: sqlite3.Connection,
+    principal: str,
+    message: dict[str, Any],
+) -> tuple[dict[str, Any] | None, JSONResponse | None]:
+    message_id = str(message.get("messageId", ""))
+    if not message_id:
+        return None, _a2a_error("INVALID_MESSAGE", 400)
+    row = connection.execute(
+        "SELECT message_hash, response_json FROM a2a_messages "
+        "WHERE principal = ? AND message_id = ?",
+        (principal, message_id),
+    ).fetchone()
+    if not row:
+        return None, None
+    if row[0] != _a2a_message_hash(message):
+        return None, _a2a_error("IDEMPOTENCY_CONFLICT", 409)
+    return json.loads(row[1]), None
 
 
 @app.get("/.well-known/agent-card.json")
@@ -485,11 +538,31 @@ async def a2a_send(
             if task is None:
                 connection.close()
                 return _a2a_error("TASK_NOT_FOUND", 404)
+            replay, error = _a2a_replayed_message(connection, principal, message)
+            if error:
+                connection.close()
+                return error
+            if replay is not None:
+                connection.close()
+                return _a2a_task_response(replay)
             task, error = _a2a_apply_results(principal, task, message)
             if error:
                 connection.close()
                 return error
             _a2a_save_task(principal, task, connection)
+            connection.execute(
+                "INSERT INTO a2a_messages "
+                "(principal, message_id, message_hash, task_id, response_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    principal,
+                    str(message["messageId"]),
+                    _a2a_message_hash(message),
+                    task["id"],
+                    _canonical_json(task),
+                ),
+            )
+            connection.commit()
             connection.close()
             return _a2a_task_response(task)
 
