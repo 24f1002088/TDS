@@ -49,6 +49,15 @@ async def angela_rayner_face() -> FileResponse:
         headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"},
     )
 
+
+@app.get("/face-morph.mp4")
+async def face_morph_video() -> FileResponse:
+    return FileResponse(
+        Path(__file__).with_name("face-morph.mp4"),
+        media_type="video/mp4",
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"},
+    )
+
 EXAM_EMAIL = "24f1002088@ds.study.iitm.ac.in"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 LEDGER_ORDERS_URL = os.getenv("LEDGER_ORDERS_URL", "")
