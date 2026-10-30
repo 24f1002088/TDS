@@ -1182,10 +1182,30 @@ def _incident_refresh_trace(state: dict[str, Any]) -> None:
             })
 
 
+def _incident_otlp_attributes(attributes: dict[str, Any]) -> list[dict[str, Any]]:
+    result = []
+    for key, value in attributes.items():
+        if isinstance(value, bool):
+            typed = {"boolValue": value}
+        elif isinstance(value, int):
+            typed = {"intValue": value}
+        elif isinstance(value, float):
+            typed = {"doubleValue": value}
+        else:
+            typed = {"stringValue": str(value)}
+        result.append({"key": key, "value": typed})
+    return result
+
+
 def _incident_response(state: dict[str, Any]) -> JSONResponse:
     _incident_refresh_trace(state)
     result = _incident_public(state)
-    result["otlp"] = {"resourceSpans": [{"scopeSpans": [{"spans": state["_spans"]}]}]}
+    spans = []
+    for span in state["_spans"]:
+        serialized = dict(span)
+        serialized["attributes"] = _incident_otlp_attributes(span.get("attributes", {}))
+        spans.append(serialized)
+    result["otlp"] = {"resourceSpans": [{"scopeSpans": [{"spans": spans}]}]}
     return JSONResponse(result, media_type="application/json")
 
 
