@@ -1103,9 +1103,19 @@ def _incident_plan(body: dict[str, Any], incoming_traceparent: str | None) -> di
             for _, line in lines
         )
     root = max(causes, key=lambda cause: scores[cause]) if causes else "unknown"
+    root_terms = re.findall(r"[a-z0-9_]{4,}", root.lower())
+    ranked_lines = sorted(
+        lines,
+        key=lambda item: (
+            2 if root.lower() in item[1].lower() else 0,
+            sum(term in item[1].lower() for term in root_terms),
+        ),
+        reverse=True,
+    )
     decisive = [
-        line_id for line_id, line in lines
-        if any(word in line.lower() for word in re.findall(r"[a-z0-9_]{4,}", root.lower()))
+        line_id for line_id, line in ranked_lines
+        if root.lower() in line.lower()
+        or any(term in line.lower() for term in root_terms)
     ][:4]
     if len(decisive) < 2:
         decisive = [line_id for line_id, _ in lines[:4]]
@@ -1129,7 +1139,7 @@ def _incident_plan(body: dict[str, Any], incoming_traceparent: str | None) -> di
         )) else 1,
     ))
     diagnostics = diagnostic_names[:max(1, min(
-        int(body["policy"].get("maximumDiagnostics", 3)), 2
+        int(body["policy"].get("maximumDiagnostics", 3)), 3
     ))]
     if not diagnostics and catalog:
         diagnostics = [next(iter(catalog))]
@@ -1199,8 +1209,15 @@ def _incident_plan(body: dict[str, Any], incoming_traceparent: str | None) -> di
         name for name in body["policy"].get("effectTools", [])
         if name in catalog
     ]
-    if any(term in text for term in ("at capacity", "maximum", "scaling limit", "cannot scale")):
-        effect = next((name for name in effect_tools if "page" in name.lower() or "owner" in name.lower()), None)
+    if any(term in text for term in (
+        "at capacity", "maximum", "scaling limit", "cannot scale",
+        "at the limit", "max replicas", "replica limit", "scaling cap",
+    )):
+        effect = next(
+            (name for name in effect_tools
+             if any(term in name.lower() for term in ("page", "owner", "oncall", "notify"))),
+            None,
+        )
     else:
         effect = effect_tools[0] if effect_tools else None
     return {
@@ -1345,7 +1362,19 @@ def _incident_effect_arguments(state: dict[str, Any], tool_name: str) -> dict[st
         "incident_id": incident["incidentId"],
         "severity": incident.get("severity", ""),
     }
-    return {key: values[key] for key in properties if key in values} or {
+    arguments = {key: values[key] for key in properties if key in values}
+    required = schema.get("required", []) if isinstance(schema, dict) else []
+    if any(key not in arguments for key in required):
+        for key in required:
+            if key not in arguments:
+                match = re.search(
+                    rf"\b{re.escape(key)}\s*[:=]\s*([A-Za-z0-9._:/-]+)",
+                    incident.get("transcript", ""),
+                    re.I,
+                )
+                if match:
+                    arguments[key] = match.group(1)
+    return arguments or {
         "service": incident["service"],
         "incidentId": incident["incidentId"],
     }
@@ -1406,7 +1435,14 @@ def _incident_receipts(state: dict[str, Any], body: dict[str, Any]) -> None:
                         if d["actionId"] == outcome.get("actionId")
                         and d["callId"] == outcome.get("callId")
                         and d["attempt"] == outcome.get("attempt")), None)
-        if not pending:
+        if (
+            not pending
+            or not isinstance(outcome.get("status"), int)
+            or not isinstance(outcome.get("resultClass"), str)
+            or not outcome.get("resultClass")
+            or not isinstance(outcome.get("nonce"), str)
+            or not outcome.get("nonce")
+        ):
             raise ValueError("INVALID_RECEIPT")
         receipt = {"receiptId": receipt_id, **outcome}
         state["receiptLog"].append(receipt)
