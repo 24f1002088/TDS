@@ -17,7 +17,7 @@ import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -39,6 +39,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/angela-rayner-face.glb")
+async def angela_rayner_face() -> FileResponse:
+    return FileResponse(
+        Path(__file__).with_name("angela-rayner-face.glb"),
+        media_type="model/gltf-binary",
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"},
+    )
 
 EXAM_EMAIL = "24f1002088@ds.study.iitm.ac.in"
 MCP_PROTOCOL_VERSION = "2024-11-05"
