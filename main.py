@@ -1333,6 +1333,18 @@ async def incident_create(request: Request) -> Response:
     return _incident_process(body, request.headers.get("traceparent"))
 
 
+@app.post("/v2/incidents/{run_id}/incidents")
+@app.post("/v2/incidents/{run_id}/incidents/")
+async def incident_create_nested(run_id: str, request: Request) -> Response:
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "INVALID_REQUEST"}, status_code=400)
+    if isinstance(body, dict) and not body.get("runId"):
+        body["runId"] = run_id
+    return _incident_process(body, request.headers.get("traceparent"))
+
+
 @app.post("/v2/incidents/{run_id}/receipts")
 @app.post("/v2/incidents/{run_id}/receipts/")
 async def incident_receipts(run_id: str, request: Request) -> Response:
