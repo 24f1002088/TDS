@@ -1386,6 +1386,13 @@ async def incident_get(run_id: str) -> Response:
     return _incident_response(json.loads(row[0]))
 
 
+@app.get("/v2/incidents/{run_id}/incidents/{nested_run_id}")
+async def incident_get_nested(run_id: str, nested_run_id: str) -> Response:
+    if run_id != nested_run_id:
+        return JSONResponse({"error": "RUN_NOT_FOUND"}, status_code=404)
+    return await incident_get(run_id)
+
+
 def _mailroom_process(body: dict[str, Any]) -> JSONResponse:
     if body.get("profile") != MAIL_PROFILE or body.get("operation") not in {"propose", "commit"}:
         return _mail_error("INVALID_REQUEST")
