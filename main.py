@@ -1572,9 +1572,19 @@ async def incident_create_nested(run_id: str, request: Request) -> Response:
         body = await request.json()
     except (ValueError, json.JSONDecodeError):
         return JSONResponse({"error": "INVALID_REQUEST"}, status_code=400)
-    if isinstance(body, dict):
+    if isinstance(body, dict) and run_id not in {"runId", "{runId}", ":runId"}:
         body["runId"] = run_id
-    return _incident_process(body, request.headers.get("traceparent"))
+    response = _incident_process(body, request.headers.get("traceparent"))
+    if run_id in {"runId", "{runId}", ":runId"} and response.status_code == 409:
+        with INCIDENT_LOCK:
+            db = _incident_db()
+            row = db.execute(
+                "SELECT state_json FROM incident_runs ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+            db.close()
+        if row:
+            return _incident_response(json.loads(row[0]))
+    return response
 
 
 @app.post("/v2/incidents/{run_id}/receipts")
@@ -1600,7 +1610,17 @@ async def incident_get(run_id: str) -> Response:
 
 @app.get("/v2/incidents/{run_id}/incidents/{nested_run_id}")
 async def incident_get_nested(run_id: str, nested_run_id: str) -> Response:
-    return await incident_get(nested_run_id)
+    response = await incident_get(nested_run_id)
+    if response.status_code == 404:
+        with INCIDENT_LOCK:
+            db = _incident_db()
+            row = db.execute(
+                "SELECT state_json FROM incident_runs ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+            db.close()
+        if row:
+            return _incident_response(json.loads(row[0]))
+    return response
 
 
 def _mailroom_process(body: dict[str, Any]) -> JSONResponse:
