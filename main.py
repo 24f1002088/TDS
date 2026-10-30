@@ -762,6 +762,7 @@ async def answer_question(request: Request) -> Any:
 
 
 @app.post("/mailroom")
+@app.post("/mailroom/")
 async def mailroom_endpoint(request: Request) -> Response:
     payload = await request.json()
     return _mailroom_process(payload) if isinstance(payload, dict) else _mail_error("INVALID_REQUEST")
@@ -1034,6 +1035,323 @@ def _mail_verify(receipt: dict[str, Any], verifier: dict[str, Any], evaluation_i
         return True
     except (InvalidSignature, KeyError, TypeError, ValueError):
         return False
+
+
+INCIDENT_PROFILE = "ga5-incident-agent/v2"
+INCIDENT_DB_PATH = os.getenv(
+    "INCIDENT_DB_PATH", str(Path(__file__).with_name("incident_runs.sqlite3"))
+)
+INCIDENT_LOCK = threading.RLock()
+
+
+def _incident_db() -> sqlite3.Connection:
+    db = sqlite3.connect(INCIDENT_DB_PATH, check_same_thread=False)
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS incident_runs "
+        "(run_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, state_json TEXT NOT NULL)"
+    )
+    db.commit()
+    return db
+
+
+def _incident_hex(size: int) -> str:
+    return uuid.uuid4().hex[:size]
+
+
+def _incident_digest(value: Any) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _incident_lines(transcript: str) -> list[tuple[str, str]]:
+    result = []
+    for line in transcript.splitlines():
+        match = re.match(r"\s*\[([A-Za-z0-9._:-]+)\]\s*(.*)", line)
+        if match:
+            result.append((match.group(1), match.group(2).strip()))
+    return result
+
+
+def _incident_plan(body: dict[str, Any], incoming_traceparent: str | None) -> dict[str, Any]:
+    incident = body["incident"]
+    lines = _incident_lines(incident["transcript"])
+    text = incident["transcript"].lower()
+    causes = incident["allowedRootCauses"]
+    scores = {
+        cause: sum(1 for _, line in lines if any(
+            word in line.lower() for word in re.findall(r"[a-z0-9_]{4,}", cause.lower())
+        ))
+        for cause in causes
+    }
+    root = max(causes, key=lambda cause: scores[cause]) if causes else "unknown"
+    decisive = [
+        line_id for line_id, line in lines
+        if any(word in line.lower() for word in re.findall(r"[a-z0-9_]{4,}", root.lower()))
+    ][:4]
+    if len(decisive) < 2:
+        decisive = [line_id for line_id, _ in lines[:4]]
+    evidence = list(dict.fromkeys(decisive))[:4]
+    catalog = {item.get("name"): item for item in body.get("toolCatalog", []) if isinstance(item, dict)}
+    diagnostics = []
+    for name in ("query_metrics", "query_logs", "check_health"):
+        if name in catalog and len(diagnostics) < int(body["policy"].get("maximumDiagnostics", 3)):
+            if name == "query_metrics" and not any("metric" in line or "cpu" in line or "latency" in line for line in text.splitlines()):
+                continue
+            diagnostics.append(name)
+    if not diagnostics:
+        diagnostics = [next(iter(catalog), "query_metrics")]
+    trace_id = _incident_hex(32)
+    parent_span = None
+    if incoming_traceparent:
+        match = re.fullmatch(r"00-([0-9a-f]{32})-([0-9a-f]{16})-[01]", incoming_traceparent)
+        if match:
+            trace_id, parent_span = match.group(1), match.group(2)
+    server_span = _incident_hex(16)
+    agent_span = _incident_hex(16)
+    model_span = _incident_hex(16)
+    public = body["publicMarker"]
+    common = {"ga5.run.id": body["runId"], "ga5.public.marker": public}
+    spans = [
+        {"traceId": trace_id, "spanId": server_span, "parentSpanId": parent_span or "",
+         "name": "POST /v2/incidents", "kind": 2, "attributes": common},
+        {"traceId": trace_id, "spanId": agent_span, "parentSpanId": server_span,
+         "name": "invoke_agent incident-response", "kind": 1, "attributes": common},
+        {"traceId": trace_id, "spanId": model_span, "parentSpanId": agent_span,
+         "name": "chat incident-plan", "kind": 3,
+         "attributes": {**common, "gen_ai.operation.name": "chat", "gen_ai.request.model": "local-rule-planner"}},
+    ]
+    dispatches = []
+    for name in diagnostics:
+        action_id = f"act-{_incident_hex(16)}"
+        call_id = f"call-{_incident_hex(16)}"
+        client_span = _incident_hex(16)
+        args = {"service": incident["service"], "incidentId": incident["incidentId"]}
+        dispatch = {
+            "actionId": action_id, "callId": call_id, "phase": "diagnostic",
+            "toolName": name, "arguments": args, "evidence": evidence[:2],
+            "attempt": 1, "traceparent": f"00-{trace_id}-{client_span}-01",
+        }
+        dispatches.append(dispatch)
+        spans.extend([
+            {"traceId": trace_id, "spanId": _incident_hex(16), "parentSpanId": agent_span,
+             "name": f"execute_tool {name}", "kind": 1, "attributes": {
+                 **common, "ga5.action.id": action_id, "gen_ai.tool.name": name,
+                 "gen_ai.tool.call.id": call_id, "gen_ai.operation.name": "execute_tool"}},
+            {"traceId": trace_id, "spanId": client_span,
+             "parentSpanId": spans[-1]["spanId"], "name": f"POST tool/{name}", "kind": 3,
+             "attributes": {**common, "ga5.action.id": action_id, "ga5.attempt": 1,
+                            "http.request.method": "POST", "http.request.resend_count": 0}},
+        ])
+    if len(dispatches) > 1:
+        spans.append({"traceId": trace_id, "spanId": _incident_hex(16), "parentSpanId": agent_span,
+                      "name": "incident.join", "kind": 1, "attributes": common,
+                      "links": [{"traceId": trace_id, "spanId": s["spanId"]}
+                                for s in spans if s["name"].startswith("execute_tool ")]})
+    effect = next((name for name in body["policy"].get("effectTools", [])
+                   if name in catalog), "page_owner")
+    return {
+        "runId": body["runId"], "status": "waiting",
+        "diagnosis": {"rootCause": root, "evidence": evidence},
+        "dispatches": dispatches, "approvals": [], "actionLog": list(dispatches),
+        "receiptLog": [], "chosenEffect": effect, "suppressed": [],
+        "_body": body, "_traceId": trace_id, "_spans": spans, "_receiptHashes": {},
+    }
+
+
+def _incident_public(state: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in state.items() if not key.startswith("_")}
+
+
+def _incident_refresh_trace(state: dict[str, Any]) -> None:
+    trace_id = state["_traceId"]
+    common = {"ga5.run.id": state["runId"], "ga5.public.marker": state["_body"]["publicMarker"]}
+    for span in state["_spans"]:
+        span["traceId"] = trace_id
+        span["attributes"] = {**common, **span.get("attributes", {})}
+    for dispatch in state["actionLog"]:
+        action_id = dispatch["actionId"]
+        client = dispatch["traceparent"].split("-")[2]
+        existing = next((s for s in state["_spans"] if s["spanId"] == client), None)
+        if existing:
+            existing["attributes"].update({
+                "ga5.receipt.id": next((r.get("receiptId") for r in state["receiptLog"]
+                                        if r.get("actionId") == action_id and r.get("attempt") == dispatch["attempt"]), ""),
+                "ga5.receipt.nonce": next((r.get("nonce") for r in state["receiptLog"]
+                                           if r.get("actionId") == action_id and r.get("attempt") == dispatch["attempt"]), ""),
+                "http.response.status_code": next((r.get("status") for r in state["receiptLog"]
+                                                   if r.get("actionId") == action_id and r.get("attempt") == dispatch["attempt"]), 0),
+            })
+
+
+def _incident_response(state: dict[str, Any]) -> JSONResponse:
+    _incident_refresh_trace(state)
+    result = _incident_public(state)
+    result["otlp"] = {"resourceSpans": [{"scopeSpans": [{"spans": state["_spans"]}]}]}
+    return JSONResponse(result, media_type="application/json")
+
+
+def _incident_save(db: sqlite3.Connection, state: dict[str, Any]) -> None:
+    db.execute("UPDATE incident_runs SET state_json=? WHERE run_id=?",
+               (_canonical_json(state), state["runId"]))
+    db.commit()
+
+
+def _incident_receipts(state: dict[str, Any], body: dict[str, Any]) -> None:
+    receipt_id = body.get("receiptId")
+    if not isinstance(receipt_id, str) or not receipt_id:
+        raise ValueError("INVALID_RECEIPT")
+    body_hash = _incident_digest(body)
+    if receipt_id in state["_receiptHashes"]:
+        if state["_receiptHashes"][receipt_id] != body_hash:
+            raise ValueError("RECEIPT_CONFLICT")
+        return
+    state["_receiptHashes"][receipt_id] = body_hash
+    approvals = body.get("approvals", [])
+    if approvals:
+        if state["dispatches"] or len(approvals) != 1 or not state["approvals"]:
+            raise ValueError("INVALID_APPROVAL")
+        approval = approvals[0]
+        pending = state["approvals"][0]
+        if (
+            approval.get("approvalId") != pending["approvalId"]
+            or approval.get("decision") not in {"approved", "rejected"}
+            or not isinstance(approval.get("nonce"), str)
+            or not approval["nonce"]
+        ):
+            raise ValueError("INVALID_APPROVAL")
+        state["receiptLog"].append({"receiptId": receipt_id, **approval})
+        state["approvals"] = []
+        if approval["decision"] == "rejected":
+            state["status"] = "failed"
+            state["chosenEffect"] = None
+            return
+        effect = pending["toolName"]
+        dispatch = {
+            "actionId": pending["actionId"], "callId": f"call-{_incident_hex(16)}",
+            "phase": "effect", "toolName": effect,
+            "arguments": {"service": state["_body"]["incident"]["service"]},
+            "evidence": state["diagnosis"]["evidence"][:2], "attempt": 1,
+            "approvalId": pending["approvalId"], "approvalNonce": approval["nonce"],
+            "traceparent": f"00-{state['_traceId']}-{_incident_hex(16)}-01",
+        }
+        state["dispatches"] = [dispatch]
+        state["actionLog"].append(dispatch)
+        return
+    outcomes = body.get("outcomes", [])
+    for outcome in outcomes:
+        pending = next((d for d in state["dispatches"]
+                        if d["actionId"] == outcome.get("actionId")
+                        and d["callId"] == outcome.get("callId")
+                        and d["attempt"] == outcome.get("attempt")), None)
+        if not pending:
+            raise ValueError("INVALID_RECEIPT")
+        receipt = {"receiptId": receipt_id, **outcome}
+        state["receiptLog"].append(receipt)
+        if outcome.get("status") == 503 and pending["attempt"] == 1:
+            retry = dict(pending)
+            retry["attempt"] = 2
+            retry["traceparent"] = f"00-{state['_traceId']}-{_incident_hex(16)}-01"
+            state["dispatches"] = [retry]
+            state["actionLog"].append(retry)
+            state["status"] = "waiting"
+            return
+        if outcome.get("status") == 0 and outcome.get("errorType") == "timeout":
+            state["dispatches"] = []
+            state["status"] = "failed"
+            return
+    if state["dispatches"] and all(any(r.get("actionId") == d["actionId"] and r.get("attempt") == d["attempt"]
+                                       for r in state["receiptLog"]) for d in state["dispatches"]):
+        state["dispatches"] = []
+        if state["approvals"]:
+            return
+        if state["chosenEffect"] and not any(d["phase"] == "effect" for d in state["actionLog"]):
+            effect = state["chosenEffect"]
+            action_id, call_id = f"act-{_incident_hex(16)}", f"call-{_incident_hex(16)}"
+            if effect in state["_body"]["policy"].get("approvalRequiredFor", []):
+                approval_id = f"approval-{_incident_hex(16)}"
+                args = {"service": state["_body"]["incident"]["service"]}
+                state["approvals"] = [{"approvalId": approval_id, "actionId": action_id,
+                                       "toolName": effect, "argumentsDigest": _incident_digest(args)}]
+            else:
+                state["dispatches"] = [{"actionId": action_id, "callId": call_id, "phase": "effect",
+                                        "toolName": effect, "arguments": {"service": state["_body"]["incident"]["service"]},
+                                        "evidence": state["diagnosis"]["evidence"][:2], "attempt": 1,
+                                        "traceparent": f"00-{state['_traceId']}-{_incident_hex(16)}-01"}]
+                state["actionLog"].extend(state["dispatches"])
+        elif any(d["phase"] == "effect" for d in state["actionLog"]):
+            state["status"] = "completed"
+
+
+def _incident_process(body: dict[str, Any], traceparent: str | None = None) -> JSONResponse:
+    if body.get("profile") != INCIDENT_PROFILE or body.get("runId") == "":
+        return JSONResponse({"error": "INVALID_REQUEST"}, status_code=400)
+    run_id = body.get("runId")
+    if not isinstance(run_id, str) or not run_id or not isinstance(body.get("incident"), dict):
+        return JSONResponse({"error": "INVALID_REQUEST"}, status_code=400)
+    request_hash = _incident_digest(body)
+    with INCIDENT_LOCK:
+        db = _incident_db()
+        row = db.execute("SELECT request_hash,state_json FROM incident_runs WHERE run_id=?", (run_id,)).fetchone()
+        if row:
+            db.close()
+            return _incident_response(json.loads(row[1])) if row[0] == request_hash else JSONResponse({"error": "RUN_CONFLICT"}, status_code=409)
+        required = ("publicMarker", "toolCatalog", "policy")
+        if any(key not in body for key in required):
+            db.close()
+            return JSONResponse({"error": "INVALID_REQUEST"}, status_code=400)
+        state = _incident_plan(body, traceparent)
+        db.execute("INSERT INTO incident_runs VALUES (?,?,?)", (run_id, request_hash, _canonical_json(state)))
+        db.commit()
+        db.close()
+        return _incident_response(state)
+
+
+def _incident_receipt_process(run_id: str, body: dict[str, Any]) -> JSONResponse:
+    with INCIDENT_LOCK:
+        db = _incident_db()
+        row = db.execute("SELECT state_json FROM incident_runs WHERE run_id=?", (run_id,)).fetchone()
+        if not row:
+            db.close()
+            return JSONResponse({"error": "RUN_NOT_FOUND"}, status_code=404)
+        state = json.loads(row[0])
+        try:
+            _incident_receipts(state, body)
+        except (KeyError, TypeError, ValueError):
+            db.close()
+            return JSONResponse({"error": "INVALID_RECEIPT"}, status_code=409)
+        _incident_save(db, state)
+        db.close()
+        return _incident_response(state)
+
+
+@app.post("/v2/incidents")
+@app.post("/v2/incidents/")
+async def incident_create(request: Request) -> Response:
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "INVALID_REQUEST"}, status_code=400)
+    return _incident_process(body, request.headers.get("traceparent"))
+
+
+@app.post("/v2/incidents/{run_id}/receipts")
+@app.post("/v2/incidents/{run_id}/receipts/")
+async def incident_receipts(run_id: str, request: Request) -> Response:
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "INVALID_RECEIPT"}, status_code=400)
+    return _incident_receipt_process(run_id, body)
+
+
+@app.get("/v2/incidents/{run_id}")
+async def incident_get(run_id: str) -> Response:
+    with INCIDENT_LOCK:
+        db = _incident_db()
+        row = db.execute("SELECT state_json FROM incident_runs WHERE run_id=?", (run_id,)).fetchone()
+        db.close()
+    if not row:
+        return JSONResponse({"error": "RUN_NOT_FOUND"}, status_code=404)
+    return _incident_response(json.loads(row[0]))
 
 
 def _mailroom_process(body: dict[str, Any]) -> JSONResponse:
