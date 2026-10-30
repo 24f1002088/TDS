@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 DEFAULTS: dict[str, Any] = {
@@ -873,6 +874,76 @@ def _mail_lines(dossier: dict[str, Any]) -> list[dict[str, str]]:
     return result
 
 
+def _mail_validate_dossier(dossier: Any) -> bool:
+    if not isinstance(dossier, dict):
+        return False
+    if not isinstance(dossier.get("dossierId"), str) or not dossier["dossierId"]:
+        return False
+    if dossier.get("partition") not in {"stable_core", "fresh_audit"}:
+        return False
+    if not isinstance(dossier.get("receivedAt"), str) or not isinstance(dossier.get("mailbox"), str):
+        return False
+    if not isinstance(dossier.get("objective"), str) or not isinstance(dossier.get("sources"), list):
+        return False
+    line_ids: list[str] = []
+    for source in dossier["sources"]:
+        if not isinstance(source, dict) or not isinstance(source.get("lines"), list):
+            return False
+        for line in source["lines"]:
+            if (
+                not isinstance(line, dict)
+                or not isinstance(line.get("lineId"), str)
+                or not line["lineId"]
+                or not isinstance(line.get("text"), str)
+            ):
+                return False
+            line_ids.append(line["lineId"])
+    return bool(line_ids) and len(line_ids) == len(set(line_ids))
+
+
+def _mail_validate_proposal(proposal: dict[str, Any], dossier: dict[str, Any]) -> bool:
+    if (
+        not isinstance(proposal.get("callId"), str)
+        or not re.fullmatch(r"[A-Za-z0-9._:-]{12,128}", proposal["callId"])
+        or proposal.get("action") not in MAIL_ACTIONS
+        or not isinstance(proposal.get("evidence"), list)
+        or not proposal["evidence"]
+        or len(proposal["evidence"]) != len(set(proposal["evidence"]))
+    ):
+        return False
+    valid_lines = {line["lineId"] for line in _mail_lines(dossier)}
+    if any(line_id not in valid_lines or not isinstance(line_id, str) for line_id in proposal["evidence"]):
+        return False
+    target = proposal.get("target")
+    payload = proposal.get("payload")
+    if proposal["action"] == "no_action":
+        return (
+            target is None
+            and isinstance(payload, dict)
+            and set(payload) == {"reasonCode", "referenceId"}
+            and payload["reasonCode"] in {"ALREADY_COMPLETED", "DUPLICATE", "INFORMATIONAL"}
+            and all(isinstance(value, str) and value for value in payload.values())
+        )
+    schemas = {
+        "create_draft": ("draft_queue", {"recipient", "referenceId", "status", "template"}),
+        "update_internal_record": ("case_record", {"field", "sourceEventId", "value"}),
+        "send_approved_notice": ("email", {"referenceId", "status", "template"}),
+        "request_confirmation": ("approval_queue", {"claimedSender", "questionCode", "referenceId"}),
+        "quarantine_item": ("security_queue", {"artifactId", "reasonCode"}),
+    }
+    target_schema, payload_keys = schemas[proposal["action"]]
+    return (
+        isinstance(target, dict)
+        and set(target) == {"kind", "id"}
+        and target["kind"] == target_schema
+        and isinstance(target["id"], str)
+        and bool(target["id"])
+        and isinstance(payload, dict)
+        and set(payload) == payload_keys
+        and all(isinstance(value, str) and value for value in payload.values())
+    )
+
+
 def _mail_extract(text: str, patterns: tuple[str, ...], default: str = "") -> str:
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
@@ -915,7 +986,7 @@ def _mail_propose(dossier: dict[str, Any]) -> dict[str, Any]:
         target = {"kind": "email", "id": recipient}
         payload = {"referenceId": reference, "status": status, "template": "approved_delivery_notice"}
         ev = evidence("approved", recipient.lower(), "public", "delivery")
-    elif "draft" in joined or "customer email" in joined or "order status" in joined:
+    elif recipient and ("draft" in joined or "customer email" in joined or "order status" in joined):
         action = "create_draft"
         target = {"kind": "draft_queue", "id": f"mailbox:{mailbox}"}
         payload = {"recipient": recipient, "referenceId": reference, "status": status, "template": "order_status"}
@@ -957,9 +1028,11 @@ def _mail_verify(receipt: dict[str, Any], verifier: dict[str, Any], evaluation_i
         signature = base64.b64decode(receipt["receiptSignature"], validate=True)
         inner = {key: value for key, value in receipt.items() if key != "receiptSignature"}
         signed = {"profile": MAIL_PROFILE, "evaluationId": evaluation_id, "inputDigest": input_digest, "receipt": inner}
-        Ed25519PublicKey.from_public_bytes(raw_key).verify(signature, _mail_canonical(signed).encode("utf-8"))
+        Ed25519PublicKey.from_public_bytes(raw_key).verify(
+            signature, _mail_canonical(signed).encode("utf-8")
+        )
         return True
-    except (KeyError, TypeError, ValueError):
+    except (InvalidSignature, KeyError, TypeError, ValueError):
         return False
 
 
@@ -979,7 +1052,12 @@ def _mailroom_process(body: dict[str, Any]) -> JSONResponse:
         ).fetchone()
         if operation == "propose":
             dossiers = body.get("dossiers")
-            if not isinstance(dossiers, list) or len({d.get("dossierId") for d in dossiers if isinstance(d, dict)}) != len(dossiers):
+            if (
+                not isinstance(dossiers, list)
+                or not dossiers
+                or any(not _mail_validate_dossier(dossier) for dossier in dossiers)
+                or len({dossier["dossierId"] for dossier in dossiers}) != len(dossiers)
+            ):
                 db.close()
                 return _mail_error("INVALID_REQUEST")
             input_digest = _mail_digest(dossiers)
@@ -989,12 +1067,23 @@ def _mailroom_process(body: dict[str, Any]) -> JSONResponse:
                 return JSONResponse(json.loads(existing[1]), media_type="application/json") if existing[0] == request_hash else _mail_error("EVALUATION_CONFLICT", 409)
             if (
                 not isinstance(body.get("receiptVerifier"), dict)
-                or set(body.get("allowedActions", [])) != MAIL_ACTIONS
-                or len(body.get("allowedActions", [])) != len(MAIL_ACTIONS)
+                or not isinstance(body.get("allowedActions"), list)
+                or not all(isinstance(action, str) for action in body["allowedActions"])
+                or set(body["allowedActions"]) != MAIL_ACTIONS
+                or len(body["allowedActions"]) != len(MAIL_ACTIONS)
+                or body["receiptVerifier"].get("algorithm") != "Ed25519"
+                or not isinstance(body["receiptVerifier"].get("publicKeyJwk"), dict)
+                or body["receiptVerifier"]["publicKeyJwk"].get("kty") != "OKP"
+                or body["receiptVerifier"]["publicKeyJwk"].get("crv") != "Ed25519"
+                or not isinstance(body["receiptVerifier"]["publicKeyJwk"].get("x"), str)
+                or not body["receiptVerifier"]["publicKeyJwk"]["x"]
             ):
                 db.close()
                 return _mail_error("INVALID_REQUEST")
-            proposals = [_mail_propose(dossier) for dossier in dossiers if isinstance(dossier, dict)]
+            proposals = [_mail_propose(dossier) for dossier in dossiers]
+            if any(not _mail_validate_proposal(proposal, dossier) for proposal, dossier in zip(proposals, dossiers)):
+                db.close()
+                return _mail_error("INVALID_PROPOSAL")
             response = {"profile": MAIL_PROFILE, "evaluationId": evaluation_id, "status": "awaiting_receipts", "inputDigest": input_digest, "proposals": proposals}
             db.execute(
                 "INSERT INTO mail_evaluations "
@@ -1021,7 +1110,22 @@ def _mailroom_process(body: dict[str, Any]) -> JSONResponse:
         if not isinstance(receipts, list) or len(receipts) != len(response["proposals"]):
             db.close(); return _mail_error("INVALID_RECEIPTS")
         proposals = {item["dossierId"]: item for item in response["proposals"]}
-        if len({r.get("dossierId") for r in receipts if isinstance(r, dict)}) != len(receipts):
+        if (
+            any(
+                not isinstance(receipt, dict)
+                or set(receipt) != {
+                    "dossierId", "callId", "action", "accepted", "proposalDigest",
+                    "receiptId", "receiptSignature",
+                }
+                or not isinstance(receipt["accepted"], bool)
+                or not all(isinstance(receipt[key], str) and receipt[key] for key in (
+                    "dossierId", "callId", "action", "proposalDigest", "receiptId",
+                    "receiptSignature",
+                ))
+                for receipt in receipts
+            )
+            or len({r["dossierId"] for r in receipts}) != len(receipts)
+        ):
             db.close(); return _mail_error("INVALID_RECEIPTS")
         verifier = json.loads(existing[3])
         outcomes = []
