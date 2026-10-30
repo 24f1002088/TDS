@@ -1572,7 +1572,7 @@ async def incident_create_nested(run_id: str, request: Request) -> Response:
         body = await request.json()
     except (ValueError, json.JSONDecodeError):
         return JSONResponse({"error": "INVALID_REQUEST"}, status_code=400)
-    if isinstance(body, dict) and not body.get("runId"):
+    if isinstance(body, dict):
         body["runId"] = run_id
     return _incident_process(body, request.headers.get("traceparent"))
 
