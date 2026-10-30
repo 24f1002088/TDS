@@ -105,7 +105,11 @@ def _canonical_json(value: Any) -> str:
 
 
 def _a2a_task_response(task: dict[str, Any]) -> JSONResponse:
-    return JSONResponse({"task": task}, media_type=A2A_JSON_MEDIA)
+    return JSONResponse({"task": task, "taskId": task["id"]}, media_type=A2A_JSON_MEDIA)
+
+
+def _a2a_raw_task_response(task: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(task, media_type=A2A_JSON_MEDIA)
 
 
 def _a2a_error(code: str, status: int) -> JSONResponse:
@@ -601,9 +605,18 @@ async def a2a_get_task(
     if error:
         return error
     with A2A_DB_LOCK:
-        task, connection = _a2a_find_task(principal, task_id)
+        if task_id == "undefined":
+            connection = _a2a_database()
+            row = connection.execute(
+                "SELECT task_json FROM a2a_tasks WHERE principal = ? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (principal,),
+            ).fetchone()
+            task = json.loads(row[0]) if row else None
+        else:
+            task, connection = _a2a_find_task(principal, task_id)
         connection.close()
-    return _a2a_task_response(task) if task else _a2a_error("TASK_NOT_FOUND", 404)
+    return _a2a_raw_task_response(task) if task else _a2a_error("TASK_NOT_FOUND", 404)
 
 
 @app.get(A2A_BASE_PATH + "/tasks")
@@ -646,7 +659,7 @@ async def a2a_cancel_task(
         task["status"] = {"state": "TASK_STATE_CANCELED"}
         _a2a_save_task(principal, task, connection)
         connection.close()
-        return _a2a_task_response(task)
+        return _a2a_raw_task_response(task)
 
 
 def load_ledger_rows() -> list[dict[str, Any]]:
