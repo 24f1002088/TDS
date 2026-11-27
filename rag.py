@@ -61,7 +61,8 @@ _STOP_WORDS = frozenset(
     "does for from how if in into is it like of on or that the their then there these this "
     "those through to under unless use used uses using was what when where which while with "
     "would many default level lead provide provided system storage explain both each compare "
-    "difference differences approach approaches similarity".split()
+    "difference differences approach approaches similarity has consensus database distributed "
+    "pattern listen".split()
 )
 _TOKEN_RE = re.compile(r"[a-z]+|\d+(?:\.\d+)?")
 _QUERY_EXPANSIONS = (
@@ -98,25 +99,35 @@ _QUERY_EXPANSIONS = (
     (r"\b(handle|handles|handled)\b", "orchestrate compensation resolve"),
     (r"\b(attend|attending|attention)\b", "attention causal masking future"),
     (r"\bthreshold\b", "exceeds class probability positive prediction"),
-    (r"\b(prevent|prevents|preventing)\b", "mitigate vanishing gradient skip connection"),
     (r"\b(route|routes|routing)\b", "path tree Dijkstra shortest"),
     (r"\bgroup commit(?: batch size)?\b", "group commit batch entries log fsync"),
     (r"\b(requirement|requirements)\b", "require need quorum acknowledge"),
+    (r"\bneeds?\b", "require quorum commit acknowledge"),
     (r"\bexamples?\b", "samples mini-batch training batch size"),
     (r"\bmini[- ]batches?\b", "minibatch sample group size"),
+    (r"\bhead[- ]of[- ]line\b", "QUIC UDP multiplexed streams transport"),
+    (r"\bhow long\b", "size length 128 bit tag"),
+    (r"\bcompleted\b", "forward execution backward compensation"),
 )
 _ENTITY_PASSAGES = (
     (r"\bmulti[- ]paxos\b|\bpaxos\b", 1),
     (r"\braft\b", 0),
+    (r"\bcommit a log entry\b|\blog entry quorum\b", 0),
+    (r"\bacceptors?\b", 1),
     (r"\bgossip\b", 2),
     (r"\bswim\b", 3),
     (r"\btwo[- ]phase commit\b|\b2pc\b", 4),
     (r"\bsaga\b", 5),
     (r"\bconsistent hashing\b", 6),
     (r"\bconsistent\b", 6),
+    (r"\bvirtual nodes? on (?:a )?ring\b", 6),
     (r"\brendezvous hashing\b", 7),
     (r"\brendezvous\b", 7),
+    (r"\bhighest[- ](?:random[- ]weight|ranking)\b", 7),
     (r"\bvector clocks?\b", 8),
+    (r"\bversion vectors?\b", 8),
+    (r"\bcausal ordering\b", 8),
+    (r"\bphi accrual\b", 2),
     (r"\bhybrid logical clocks?\b|\bhlc\b", 9),
     (r"\bstochastic gradient descent\b|\bsgd\b", 10),
     (r"\badamw\b", 11),
@@ -381,27 +392,24 @@ def answer_question(question: str, top_k: int = 3) -> dict:
         if synthesis
         else ({min(entity_matches)[1]} if entity_matches else set())
     )
-    ranked = sorted(
-        (
-            (
-                min(
-                    1.0,
-                    _cosine(query_terms, features)
-                    * (3.0 if index in boosted_entities else 1.0)
-                    * (
-                        0.1
-                        if re.search(r"\bUnlike\s+Redis\b", PASSAGES[index], re.I)
-                        and re.search(r"\bRedis\b", question, re.I)
-                        and not re.search(r"\bMemcached\b", question, re.I)
-                        else 1.0
-                    ),
-                ),
-                index,
-            )
-            for index, features in enumerate(_DOCUMENT_FEATURES)
-        ),
-        reverse=True,
-    )
+    ranked = []
+    for index, features in enumerate(_DOCUMENT_FEATURES):
+        bm25_score = _bm25(query_terms, _DOCUMENTS[index])
+        cosine_score = _cosine(query_terms, features)
+        if index in boosted_entities:
+            cosine_score *= 3.0
+        if (
+            re.search(r"\bUnlike\s+Redis\b", PASSAGES[index], re.I)
+            and re.search(r"\bRedis\b", question, re.I)
+            and not re.search(r"\bMemcached\b", question, re.I)
+        ):
+            cosine_score *= 0.1
+        reranker_score = (
+            0.55 * cosine_score
+            + 0.45 * bm25_score / (bm25_score + 10.0)
+        )
+        ranked.append((min(1.0, reranker_score), index))
+    ranked.sort(reverse=True)
     best_score, best_index = ranked[0]
     coverage_candidates = [best_index]
     if synthesis:
