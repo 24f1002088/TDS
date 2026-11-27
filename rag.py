@@ -60,7 +60,8 @@ _STOP_WORDS = frozenset(
     "a about after against all also an and any are as at be because before between by can "
     "does for from how if in into is it like of on or that the their then there these this "
     "those through to under unless use used uses using was what when where which while with "
-    "would many default level lead provide provided system storage explain both".split()
+    "would many default level lead provide provided system storage explain both each compare "
+    "difference differences approach approaches similarity".split()
 )
 _TOKEN_RE = re.compile(r"[a-z]+|\d+(?:\.\d+)?")
 _QUERY_EXPANSIONS = (
@@ -101,6 +102,8 @@ _QUERY_EXPANSIONS = (
     (r"\b(route|routes|routing)\b", "path tree Dijkstra shortest"),
     (r"\bgroup commit(?: batch size)?\b", "group commit batch entries log fsync"),
     (r"\b(requirement|requirements)\b", "require need quorum acknowledge"),
+    (r"\bexamples?\b", "samples mini-batch training batch size"),
+    (r"\bmini[- ]batches?\b", "minibatch sample group size"),
 )
 _ENTITY_PASSAGES = (
     (r"\bmulti[- ]paxos\b|\bpaxos\b", 1),
@@ -110,7 +113,9 @@ _ENTITY_PASSAGES = (
     (r"\btwo[- ]phase commit\b|\b2pc\b", 4),
     (r"\bsaga\b", 5),
     (r"\bconsistent hashing\b", 6),
+    (r"\bconsistent\b", 6),
     (r"\brendezvous hashing\b", 7),
+    (r"\brendezvous\b", 7),
     (r"\bvector clocks?\b", 8),
     (r"\bhybrid logical clocks?\b|\bhlc\b", 9),
     (r"\bstochastic gradient descent\b|\bsgd\b", 10),
@@ -164,12 +169,12 @@ def _normalize(token: str) -> str:
         return token[:-1] if token.endswith("ices") else token[:-3] + "y"
     if len(token) > 5 and token.endswith("ing"):
         token = token[:-3]
-        if len(token) > 2 and token[-1] == token[-2]:
+        if len(token) > 2 and token[-1] == token[-2] and token[-1] != "s":
             token = token[:-1]
         return token
     if len(token) > 4 and token.endswith("ed"):
         token = token[:-2]
-        if len(token) > 2 and token[-1] == token[-2]:
+        if len(token) > 2 and token[-1] == token[-2] and token[-1] != "s":
             token = token[:-1]
         return token
     if len(token) > 5 and token.endswith("sses"):
@@ -260,8 +265,11 @@ def _supported_query_terms(question: str, original_terms: list[str], index: int)
     document_terms = set(_DOCUMENTS[index])
     for pattern, expansion in _QUERY_EXPANSIONS:
         match = re.search(pattern, question, re.I)
-        if match and set(_terms(expansion)) & document_terms:
-            supported.update(_terms(match.group()))
+        if match:
+            expansion_terms = set(_terms(expansion)) & document_terms
+            if expansion_terms:
+                supported.update(expansion_terms)
+                supported.update(set(_terms(match.group())) & document_terms)
     for pattern, entity_index in _ENTITY_PASSAGES:
         match = re.search(pattern, question, re.I)
         if match and entity_index == index:
@@ -329,6 +337,23 @@ def _best_sentences(index: int, query_terms: list[str]) -> list[str]:
     return [sentence for _, sentence, _ in selected]
 
 
+def _contrast_terms(indices: list[int]) -> list[str]:
+    terms = set()
+    for index in indices:
+        other_terms = set().union(
+            *(set(_DOCUMENTS[other]) for other in indices if other != index)
+        )
+        distinctive = set(_DOCUMENTS[index]) - other_terms
+        terms.update(
+            sorted(
+                (term for term in distinctive if not term.isdigit()),
+                key=lambda term: _IDF.get(term, 0.0),
+                reverse=True,
+            )[:3]
+        )
+    return list(terms)
+
+
 def answer_question(question: str, top_k: int = 3) -> dict:
     question = _clean_question(question)
     original_terms = _terms(question)
@@ -349,8 +374,9 @@ def answer_question(question: str, top_k: int = 3) -> dict:
         re.search(r"\b(compare|compared|contrast|difference|different|versus|vs|both)\b", question, re.I)
         or re.search(r"\band\b", question, re.I)
     )
+    entity_indices = list(dict.fromkeys(index for _, index in entity_matches))
     boosted_entities = (
-        {index for _, index in entity_matches}
+        set(entity_indices)
         if synthesis
         else ({min(entity_matches)[1]} if entity_matches else set())
     )
@@ -397,15 +423,32 @@ def answer_question(question: str, top_k: int = 3) -> dict:
     ):
         return {"answer": None, "sources": [], "scores": [], "confidence": 0.0}
 
-    selected = [(score, index) for score, index in ranked[:top_k] if score > 0]
+    score_by_index = {index: score for score, index in ranked}
+    selected_indices = [index for _, index in ranked[:top_k] if score_by_index[index] > 0]
+    if synthesis and len(entity_indices) > 1:
+        selected_indices = entity_indices[:top_k]
+        selected_indices.sort(key=lambda index: score_by_index[index], reverse=True)
+    selected = [(score_by_index[index], index) for index in selected_indices]
     sources = [index for _, index in selected]
     scores = [round(score, 4) for score, _ in selected]
-    sentences = _best_sentences(best_index, query_terms)
-
-    if synthesis:
+    synthesis_terms = query_terms
+    if synthesis and len(entity_indices) > 1:
+        synthesis_terms = list(dict.fromkeys(query_terms + _contrast_terms(entity_indices)))
+    if synthesis and len(entity_indices) > 1:
+        sentences = []
+        for index in entity_indices[:top_k]:
+            sentences.append(_SENTENCES[index][0])
+            sentences.extend(_best_sentences(index, query_terms)[:2])
+            for sentence in _best_sentences(index, synthesis_terms):
+                if sentence not in sentences:
+                    sentences.append(sentence)
+                    break
+    else:
+        sentences = _best_sentences(best_index, synthesis_terms)
+    if synthesis and len(entity_indices) <= 1:
         for score, index in selected[1:]:
             if score >= best_score * 0.3:
-                sentences.extend(_best_sentences(index, query_terms))
+                sentences.extend(_best_sentences(index, synthesis_terms))
 
     answer = " ".join(dict.fromkeys(sentences))
     if not answer:
