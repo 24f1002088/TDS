@@ -18,8 +18,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import BaseModel, Field
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+from rag import answer_question as answer_rag_question
 
 DEFAULTS: dict[str, Any] = {
     "port": 8000,
@@ -777,6 +780,16 @@ async def answer_question(request: Request) -> Any:
     if isinstance(payload, dict) and payload.get("profile") == MAIL_PROFILE:
         return _mailroom_process(payload)
     return {"answer": answer_ledger_question(str(payload.get("question", "")))}
+
+
+class RAGQuery(BaseModel):
+    question: str = Field(min_length=1)
+    top_k: int = Field(default=3, ge=1, le=50)
+
+
+@app.post("/query")
+def rag_query(payload: RAGQuery) -> dict[str, Any]:
+    return answer_rag_question(payload.question, payload.top_k)
 
 
 @app.post("/mailroom")

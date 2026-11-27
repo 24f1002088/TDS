@@ -33,6 +33,15 @@ You have 30 text files scattered across a nested directory structure. Your job i
 - Use `LC_ALL=C` to ensure consistent sorting regardless of locale
 - The hash must match exactly, including directory structure
 
+## Technical RAG endpoint
+
+`POST /query` searches the 50 technical passages in `rag.py` and returns an
+extractive answer, matching passage indices, relevance scores, and confidence.
+The JSON body accepts a required `question` and optional `top_k` (default `3`,
+range `1`–`50`). Questions without sufficient passage overlap return a null
+answer, empty sources and scores, and zero confidence. CORS is enabled for
+cross-origin requests.
+
 ## Invoice A2A agent
 
 The FastAPI service also exposes the invoice action agent at `/a2a/`:
