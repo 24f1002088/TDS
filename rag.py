@@ -433,10 +433,15 @@ def answer_question(question: str, top_k: int = 3) -> dict:
         return {"answer": None, "sources": [], "scores": [], "confidence": 0.0}
 
     score_by_index = {index: score for score, index in ranked}
-    selected_indices = [index for _, index in ranked[:top_k] if score_by_index[index] > 0]
     if synthesis and len(entity_indices) > 1:
         selected_indices = entity_indices[:top_k]
         selected_indices.sort(key=lambda index: score_by_index[index], reverse=True)
+    else:
+        selected_indices = [
+            index
+            for score, index in ranked[:top_k]
+            if score >= max(best_score * 0.7, 0.08)
+        ]
     selected = [(score_by_index[index], index) for index in selected_indices]
     sources = [index for _, index in selected]
     scores = [round(score, 4) for score, _ in selected]
