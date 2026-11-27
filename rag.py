@@ -243,21 +243,22 @@ def _query_terms(text: str) -> list[str]:
 
 
 def _clean_question(question: str) -> str:
-    cleaned = re.sub(
-        r"\b(?:ignore|disregard|forget|override)\b[^.!?]{0,160}"
-        r"\b(?:instructions?|rules?|system prompt|previous prompts?)\b"
-        r"(?:\s+(?:and|then)\s+(?:reveal|output|print|answer|follow|obey)\b)?",
-        " ",
-        question,
-        flags=re.I,
-    )
-    return re.sub(
-        r"\b(?:reveal|print|show|repeat|output)\b[^.!?]{0,80}"
-        r"\b(?:system|hidden|secret)\s+(?:prompt|instructions?)\b",
-        " ",
-        cleaned,
-        flags=re.I,
-    )
+    clauses = re.split(r"(?<=[.!?;])\s+", question)
+    safe_clauses = []
+    for clause in clauses:
+        has_directive = re.search(r"\b(?:ignore|disregard|forget|override)\b", clause, re.I)
+        has_disclosure = re.search(
+            r"\b(?:reveal|print|show|repeat|output|exfiltrate)\b", clause, re.I
+        )
+        has_sensitive_target = re.search(
+            r"\b(?:instructions?|rules?|system prompt|previous prompts?|secrets?)\b",
+            clause,
+            re.I,
+        )
+        if has_sensitive_target and (has_directive or has_disclosure):
+            continue
+        safe_clauses.append(clause)
+    return " ".join(safe_clauses).strip()
 
 
 def _supported_query_terms(question: str, original_terms: list[str], index: int) -> set[str]:
