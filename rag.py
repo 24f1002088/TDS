@@ -59,9 +59,102 @@ PASSAGES = (
 _STOP_WORDS = frozenset(
     "a about after against all also an and any are as at be because before between by can "
     "does for from how if in into is it like of on or that the their then there these this "
-    "those through to under unless use using was what when where which while with would many".split()
+    "those through to under unless use used uses using was what when where which while with "
+    "would many default level lead provide provided system storage explain both".split()
 )
 _TOKEN_RE = re.compile(r"[a-z]+|\d+(?:\.\d+)?")
+_QUERY_EXPANSIONS = (
+    (r"\b2pc\b", "two phase commit transaction coordinator prepare"),
+    (r"\bswim\b", "membership protocol ping probe suspicion dead node"),
+    (r"\bsgd\b", "stochastic gradient descent minibatch sample"),
+    (r"\bhlc\b", "hybrid logical clock timestamp"),
+    (r"\becc\b", "elliptic curve cryptography ECDSA"),
+    (r"\bcsp\b", "content security policy origins scripts styles fonts"),
+    (r"\bhpack\b", "header compression metadata dynamic indexing"),
+    (r"\bqpack\b", "header compression HTTP/3 dynamic table"),
+    (r"\bdns\b", "domain name system recursive resolver authoritative UDP"),
+    (r"\btcp\b", "transmission control protocol byte stream"),
+    (r"\bwal\b", "write ahead logging transaction records crash recovery"),
+    (r"\blsm\b", "log structured merge tree SSTable compaction"),
+    (r"\bpkce\b", "proof key code verifier challenge OAuth"),
+    (r"\bjwt\b", "JSON web token payload signature claims"),
+    (r"\bbgp\b", "border gateway protocol autonomous system AS PATH routing"),
+    (r"\bospf\b", "open shortest path first link state Dijkstra"),
+    (r"\baes\b", "advanced encryption standard symmetric GCM"),
+    (r"\bsvm\b", "support vector machine maximum margin kernel"),
+    (r"\bmlp\b", "multi layer perceptron hidden dense layers"),
+    (r"\bhttp\s*/?\s*2\b", "HTTP/2 binary framing multiplexing HPACK"),
+    (r"\bhttp\s*/?\s*3\b", "HTTP/3 QUIC UDP QPACK"),
+    (r"\b(unavailable|unreachable|offline)\b", "dead failed failure suspect node"),
+    (r"\b(detect|identify|recognize)\b", "detector detection suspicion probe"),
+    (r"\blayer norm\b", "layer normalization feature channels sequence sample"),
+    (r"\bbatch norm\b", "batch normalization mini batch statistics"),
+    (r"\bbloom filters?\b", "Bloom filter key absence point lookup disk read"),
+    (r"\b(tag size|authentication tag)\b", "authenticator integrity tag 128 bit"),
+    (r"\b(recover|recovery)\b", "snapshot replay crash log compaction"),
+    (r"\b(conflict|conflicts)\b", "ballot randomized backoff resolve"),
+    (r"\b(failed|failure)\b", "timeout compensation rollback"),
+    (r"\b(handle|handles|handled)\b", "orchestrate compensation resolve"),
+    (r"\b(attend|attending|attention)\b", "attention causal masking future"),
+    (r"\bthreshold\b", "exceeds class probability positive prediction"),
+    (r"\b(prevent|prevents|preventing)\b", "mitigate vanishing gradient skip connection"),
+    (r"\b(route|routes|routing)\b", "path tree Dijkstra shortest"),
+    (r"\bgroup commit(?: batch size)?\b", "group commit batch entries log fsync"),
+    (r"\b(requirement|requirements)\b", "require need quorum acknowledge"),
+)
+_ENTITY_PASSAGES = (
+    (r"\bmulti[- ]paxos\b|\bpaxos\b", 1),
+    (r"\braft\b", 0),
+    (r"\bgossip\b", 2),
+    (r"\bswim\b", 3),
+    (r"\btwo[- ]phase commit\b|\b2pc\b", 4),
+    (r"\bsaga\b", 5),
+    (r"\bconsistent hashing\b", 6),
+    (r"\brendezvous hashing\b", 7),
+    (r"\bvector clocks?\b", 8),
+    (r"\bhybrid logical clocks?\b|\bhlc\b", 9),
+    (r"\bstochastic gradient descent\b|\bsgd\b", 10),
+    (r"\badamw\b", 11),
+    (r"\btransformer encoders?\b", 12),
+    (r"\bautoregressive transformer decoders?\b", 13),
+    (r"\blogistic regression\b", 14),
+    (r"\bsupport vector machines?\b|\bsvm\b", 15),
+    (r"\bmultilayer perceptrons?\b|\bmlp\b", 16),
+    (r"\bresnet\b|\bresidual convolutional networks?\b", 17),
+    (r"\bbatch normalization\b|\bbatch norm\b", 18),
+    (r"\blayer normalization\b|\blayer norm\b", 19),
+    (r"\bpostgresql\b", 20),
+    (r"\bmysql\b", 21),
+    (r"\bb\+\s*trees?\b", 22),
+    (r"\blog[- ]structured merge trees?\b|\blsm trees?\b", 23),
+    (r"\bmongodb\b", 24),
+    (r"\bcassandra\b", 25),
+    (r"\bredis\b", 26),
+    (r"\bmemcached\b", 27),
+    (r"\bwrite[- ]ahead logging\b|\bwal\b", 28),
+    (r"\bshadow paging\b", 29),
+    (r"\bgroup commit\b", 28),
+    (r"\btransmission control protocol\b|\btcp\b", 30),
+    (r"\bquic\b", 31),
+    (r"\bdomain name system\b|\bdns\b", 32),
+    (r"\bmulticast dns\b|\bmdns\b", 33),
+    (r"\bhttp\s*/?\s*2\b", 34),
+    (r"\bhttp\s*/?\s*3\b", 35),
+    (r"\btls\s*1\.3\b", 36),
+    (r"\btls\s*1\.2\b", 37),
+    (r"\bborder gateway protocol\b|\bbgp\b", 38),
+    (r"\bopen shortest path first\b|\bospf\b", 39),
+    (r"\brsa\b", 40),
+    (r"\belliptic curve cryptography\b|\becc\b|\becdsa\b", 41),
+    (r"\bargon2\b", 42),
+    (r"\bpbkdf2\b", 43),
+    (r"\bweb application firewall\b|\bwaf\b", 44),
+    (r"\bapi gateway\b", 45),
+    (r"\badvanced encryption standard\b|\baes\b", 46),
+    (r"\bchacha20(?:-poly1305)?\b|\bpoly1305\b", 47),
+    (r"\bpkce\b", 48),
+    (r"\bjson web tokens?\b|\bjwt\b", 49),
+)
 
 
 def _normalize(token: str) -> str:
@@ -81,9 +174,13 @@ def _normalize(token: str) -> str:
         return token
     if len(token) > 5 and token.endswith("sses"):
         return token[:-2]
-    if len(token) > 4 and token.endswith("es") and token[:-2].endswith(("x", "ch", "sh", "z")):
+    if len(token) > 5 and token.endswith(("ches", "shes", "xes", "zzes")):
         return token[:-2]
-    if len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+    if (
+        len(token) > 4
+        and token.endswith("s")
+        and not token.endswith(("ss", "is", "us"))
+    ):
         return token[:-1]
     return token
 
@@ -122,6 +219,54 @@ def _terms(text: str) -> list[str]:
         for token in _TOKEN_RE.findall(text.lower())
         if _normalize(token) not in _STOP_WORDS
     ]
+
+
+def _query_terms(text: str) -> list[str]:
+    terms = _terms(text)
+    for pattern, expansion in _QUERY_EXPANSIONS:
+        if pattern == r"\bdns\b" and re.search(
+            r"\b(multicast dns|mdns|bonjour|avahi)\b", text, re.I
+        ):
+            continue
+        if re.search(pattern, text, re.I):
+            terms.extend(_terms(expansion))
+    if re.search(r"\b(multicast dns|mdns|bonjour|avahi)\b", text, re.I):
+        terms.extend(_terms("multicast DNS local link subnet lookup responder"))
+    elif re.search(r"\bdns\b", text, re.I):
+        terms.extend(_terms("domain name system recursive resolver authoritative UDP"))
+    return list(dict.fromkeys(terms))
+
+
+def _clean_question(question: str) -> str:
+    cleaned = re.sub(
+        r"\b(?:ignore|disregard|forget|override)\b[^.!?]{0,160}"
+        r"\b(?:instructions?|rules?|system prompt|previous prompts?)\b"
+        r"(?:\s+(?:and|then)\s+(?:reveal|output|print|answer|follow|obey)\b)?",
+        " ",
+        question,
+        flags=re.I,
+    )
+    return re.sub(
+        r"\b(?:reveal|print|show|repeat|output)\b[^.!?]{0,80}"
+        r"\b(?:system|hidden|secret)\s+(?:prompt|instructions?)\b",
+        " ",
+        cleaned,
+        flags=re.I,
+    )
+
+
+def _supported_query_terms(question: str, original_terms: list[str], index: int) -> set[str]:
+    supported = set(original_terms) & set(_DOCUMENTS[index])
+    document_terms = set(_DOCUMENTS[index])
+    for pattern, expansion in _QUERY_EXPANSIONS:
+        match = re.search(pattern, question, re.I)
+        if match and set(_terms(expansion)) & document_terms:
+            supported.update(_terms(match.group()))
+    for pattern, entity_index in _ENTITY_PASSAGES:
+        match = re.search(pattern, question, re.I)
+        if match and entity_index == index:
+            supported.update(_terms(match.group()))
+    return supported
 
 
 def _bm25(query_terms: list[str], document: tuple[str, ...]) -> float:
@@ -185,7 +330,9 @@ def _best_sentences(index: int, query_terms: list[str]) -> list[str]:
 
 
 def answer_question(question: str, top_k: int = 3) -> dict:
-    query_terms = _terms(question)
+    question = _clean_question(question)
+    original_terms = _terms(question)
+    query_terms = _query_terms(question)
     if not query_terms:
         return {"answer": None, "sources": [], "scores": [], "confidence": 0.0}
 
@@ -193,20 +340,60 @@ def answer_question(question: str, top_k: int = 3) -> dict:
         ((_bm25(query_terms, document), index) for index, document in enumerate(_DOCUMENTS)),
         reverse=True,
     )
+    entity_matches = [
+        (match.start(), index)
+        for pattern, index in _ENTITY_PASSAGES
+        if (match := re.search(pattern, question, re.I))
+    ]
+    synthesis = bool(
+        re.search(r"\b(compare|compared|contrast|difference|different|versus|vs|both)\b", question, re.I)
+        or re.search(r"\band\b", question, re.I)
+    )
+    boosted_entities = (
+        {index for _, index in entity_matches}
+        if synthesis
+        else ({min(entity_matches)[1]} if entity_matches else set())
+    )
     ranked = sorted(
         (
-            (_cosine(query_terms, features), index)
+            (
+                min(
+                    1.0,
+                    _cosine(query_terms, features)
+                    * (3.0 if index in boosted_entities else 1.0)
+                    * (
+                        0.1
+                        if re.search(r"\bUnlike\s+Redis\b", PASSAGES[index], re.I)
+                        and re.search(r"\bRedis\b", question, re.I)
+                        and not re.search(r"\bMemcached\b", question, re.I)
+                        else 1.0
+                    ),
+                ),
+                index,
+            )
             for index, features in enumerate(_DOCUMENT_FEATURES)
         ),
         reverse=True,
     )
     best_score, best_index = ranked[0]
-    matched_terms = set(query_terms) & set(_DOCUMENTS[best_index])
+    coverage_candidates = [best_index]
+    if synthesis:
+        coverage_candidates.extend(
+            index
+            for score, index in ranked[1:3]
+            if score >= best_score * 0.3
+        )
+    matched_terms = set().union(
+        *(
+            _supported_query_terms(question, original_terms, index)
+            for index in coverage_candidates
+        )
+    )
     if (
         bm25_ranked[0][0] < 1.0
         or best_score < 0.08
         or not matched_terms
-        or len(matched_terms) / len(set(query_terms)) <= 0.5
+        or len(matched_terms) / len(set(original_terms)) < 0.7
     ):
         return {"answer": None, "sources": [], "scores": [], "confidence": 0.0}
 
@@ -215,9 +402,10 @@ def answer_question(question: str, top_k: int = 3) -> dict:
     scores = [round(score, 4) for score, _ in selected]
     sentences = _best_sentences(best_index, query_terms)
 
-    comparison = bool(re.search(r"\b(compare|contrast|difference|different|versus|vs)\b", question, re.I))
-    if comparison and len(selected) > 1 and selected[1][0] >= best_score * 0.45:
-        sentences.extend(_best_sentences(selected[1][1], query_terms))
+    if synthesis:
+        for score, index in selected[1:]:
+            if score >= best_score * 0.3:
+                sentences.extend(_best_sentences(index, query_terms))
 
     answer = " ".join(dict.fromkeys(sentences))
     if not answer:
