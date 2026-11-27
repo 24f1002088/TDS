@@ -42,6 +42,15 @@ range `1`–`50`). Questions without sufficient passage overlap return a null
 answer, empty sources and scores, and zero confidence. CORS is enabled for
 cross-origin requests.
 
+## Safety harness classifier
+
+`POST /safety` accepts an `agent-harness-2026-09` JSON envelope with up to 24
+independent cases and returns one five-field decision tuple per case. The
+classifier uses only the supplied user messages, trusted resolved-tool metadata,
+structured preflight observations, and rollback plan; case-provided memory,
+repository instructions, and free text cannot grant authorization. Requests
+must use `Content-Type: application/json`, and the body is limited to 2 MiB.
+
 ## Invoice A2A agent
 
 The FastAPI service also exposes the invoice action agent at `/a2a/`:

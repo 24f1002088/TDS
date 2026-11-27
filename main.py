@@ -23,6 +23,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from rag import answer_question as answer_rag_question
+from safety_harness import MAX_REQUEST_BYTES, classify_batch
 
 DEFAULTS: dict[str, Any] = {
     "port": 8000,
@@ -790,6 +791,22 @@ class RAGQuery(BaseModel):
 @app.post("/query")
 def rag_query(payload: RAGQuery) -> dict[str, Any]:
     return answer_rag_question(payload.question, payload.top_k)
+
+
+@app.post("/safety")
+async def safety_harness_endpoint(request: Request) -> Response:
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        return JSONResponse({"error": "application/json required"}, status_code=415)
+    body = await request.body()
+    if len(body) > MAX_REQUEST_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    try:
+        payload = json.loads(body)
+        response = classify_batch(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return JSONResponse({"error": "invalid safety batch"}, status_code=400)
+    return JSONResponse(response)
 
 
 @app.post("/mailroom")
